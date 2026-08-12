@@ -1,17 +1,12 @@
 import { BaseGameEngine, BaseAIEngine } from '../../core/GameEngine.js'
 
 /**
- * Chess Engine — Phase 2
- *
- * Piece encoding: positive = white, negative = black
- * 1=pawn, 2=knight, 3=bishop, 4=rook, 5=queen, 6=king
- *
- * Board: 64-element array, index 0=a8 (top-left), 63=h1 (bottom-right).
+ * Chess Engine — full legal move generation.
+ * FIX: _applyMoveToState used broken `this.cloneState.call({state})`
+ *      — replaced with a direct deep-clone helper that does not touch `this`.
  */
 
-export const PIECES = {
-  PAWN: 1, KNIGHT: 2, BISHOP: 3, ROOK: 4, QUEEN: 5, KING: 6
-}
+const PAWN=1, KNIGHT=2, BISHOP=3, ROOK=4, QUEEN=5, KING=6
 
 const INIT_BOARD = [
   -4,-2,-3,-5,-6,-3,-2,-4,
@@ -24,9 +19,19 @@ const INIT_BOARD = [
    4, 2, 3, 5, 6, 3, 2, 4
 ]
 
-const SYMBOL = {
+const SYM = {
   1:'♙', 2:'♘', 3:'♗', 4:'♖', 5:'♕', 6:'♔',
-  '-1':'♟', '-2':'♞', '-3':'♝', '-4':'♜', '-5':'♛', '-6':'♚'
+  '-1':'♟','-2':'♞','-3':'♝','-4':'♜','-5':'♛','-6':'♚'
+}
+
+/** Pure function — deep-clone a state object. No `this` involved. */
+function cloneChessState(state) {
+  return {
+    ...state,
+    board: [...state.board],
+    castling: { ...state.castling },
+    moveHistory: [...state.moveHistory]
+  }
 }
 
 export class ChessEngine extends BaseGameEngine {
@@ -34,9 +39,9 @@ export class ChessEngine extends BaseGameEngine {
     this.history = []
     this.state = {
       board: [...INIT_BOARD],
-      currentPlayer: 'w',         // 'w' | 'b'
+      currentPlayer: 'w',
       castling: { wK: true, wQ: true, bK: true, bQ: true },
-      enPassant: null,             // target square index or null
+      enPassant: null,
       halfMoveClock: 0,
       fullMoveNumber: 1,
       check: false,
@@ -57,19 +62,17 @@ export class ChessEngine extends BaseGameEngine {
   applyMove(move) {
     if (this.state.gameOver) return { success: false, error: 'Game over' }
     const legal = this.getLegalMoves()
-    const isLegal = legal.some(m => m.from === move.from && m.to === move.to && m.promotion === move.promotion)
-    if (!isLegal) return { success: false, error: 'Illegal move' }
-
-    this.history.push(this.cloneState())
-    const newState = this._applyMoveToState(this.state, move)
-    this.state = newState
-    return { success: true, newState: this.cloneState() }
+    const ok = legal.some(m => m.from === move.from && m.to === move.to && m.promotion === move.promotion)
+    if (!ok) return { success: false, error: 'Illegal move' }
+    this.history.push(cloneChessState(this.state))
+    this.state = this._applyMoveToState(this.state, move)
+    return { success: true, newState: cloneChessState(this.state) }
   }
 
   undoMove() {
     if (!this.history.length) return { success: false }
     this.state = this.history.pop()
-    return { success: true, newState: this.cloneState() }
+    return { success: true, newState: cloneChessState(this.state) }
   }
 
   isGameOver() { return this.state.gameOver }
@@ -80,10 +83,12 @@ export class ChessEngine extends BaseGameEngine {
     return { winner: 'draw', reason: 'Draw' }
   }
 
+  serializeState()          { return cloneChessState(this.state) }
+  deserializeState(s)       { this.state = cloneChessState(s) }
+
   _generateLegalMoves(state) {
-    const pseudo = this._generatePseudoLegal(state)
-    return pseudo.filter(move => {
-      const after = this._applyMoveToState(state, move)
+    return this._generatePseudoLegal(state).filter(m => {
+      const after = this._applyMoveToState(state, m)
       return !this._isInCheck(after, state.currentPlayer)
     })
   }
@@ -92,51 +97,40 @@ export class ChessEngine extends BaseGameEngine {
     const { board, currentPlayer, enPassant, castling } = state
     const moves = []
     const sign = currentPlayer === 'w' ? 1 : -1
-
     for (let from = 0; from < 64; from++) {
       const piece = board[from]
-      if (piece === 0 || Math.sign(piece) !== sign) continue
+      if (!piece || Math.sign(piece) !== sign) continue
       const abs = Math.abs(piece)
       const row = Math.floor(from / 8), col = from % 8
-
-      if (abs === 1) this._pawnMoves(from, row, col, sign, board, enPassant, moves)
-      if (abs === 2) this._knightMoves(from, row, col, sign, board, moves)
-      if (abs === 3 || abs === 5) this._slidingMoves(from, row, col, sign, board, moves, [[1,1],[1,-1],[-1,1],[-1,-1]])
-      if (abs === 4 || abs === 5) this._slidingMoves(from, row, col, sign, board, moves, [[1,0],[-1,0],[0,1],[0,-1]])
-      if (abs === 6) this._kingMoves(from, row, col, sign, board, castling, currentPlayer, moves)
+      if (abs === PAWN)                          this._pawnMoves(from, row, col, sign, board, enPassant, moves)
+      if (abs === KNIGHT)                        this._knightMoves(from, row, col, sign, board, moves)
+      if (abs === BISHOP || abs === QUEEN)       this._slidingMoves(from, row, col, sign, board, moves, [[1,1],[1,-1],[-1,1],[-1,-1]])
+      if (abs === ROOK   || abs === QUEEN)       this._slidingMoves(from, row, col, sign, board, moves, [[1,0],[-1,0],[0,1],[0,-1]])
+      if (abs === KING)                          this._kingMoves(from, row, col, sign, board, castling, currentPlayer, moves)
     }
     return moves
   }
 
   _pawnMoves(from, row, col, sign, board, enPassant, moves) {
-    const dir = -sign // white moves up (neg index), black moves down (pos)
+    const dir = -sign
     const startRow = sign === 1 ? 6 : 1
-    const promRow = sign === 1 ? 0 : 7
-
-    // Forward
+    const promRow  = sign === 1 ? 0 : 7
     const fwd = from + dir * 8
     if (fwd >= 0 && fwd < 64 && board[fwd] === 0) {
-      const toRow = Math.floor(fwd / 8)
-      if (toRow === promRow) {
+      if (Math.floor(fwd / 8) === promRow) {
         for (const p of [2,3,4,5]) moves.push({ from, to: fwd, promotion: p * sign })
       } else {
         moves.push({ from, to: fwd })
-        // Double push
-        if (row === startRow) {
-          const fwd2 = from + dir * 16
-          if (board[fwd2] === 0) moves.push({ from, to: fwd2, doublePush: true })
-        }
+        if (row === startRow && board[from + dir * 16] === 0)
+          moves.push({ from, to: from + dir * 16, doublePush: true })
       }
     }
-    // Captures
     for (const dc of [-1, 1]) {
-      const tc = col + dc
-      if (tc < 0 || tc > 7) continue
+      if (col + dc < 0 || col + dc > 7) continue
       const to = from + dir * 8 + dc
       if (to < 0 || to >= 64) continue
       if (Math.sign(board[to]) === -sign) {
-        const toRow = Math.floor(to / 8)
-        if (toRow === promRow) {
+        if (Math.floor(to / 8) === promRow) {
           for (const p of [2,3,4,5]) moves.push({ from, to, promotion: p * sign })
         } else moves.push({ from, to })
       }
@@ -171,96 +165,110 @@ export class ChessEngine extends BaseGameEngine {
       const to = nr * 8 + nc
       if (Math.sign(board[to]) !== sign) moves.push({ from, to })
     }
-    // Castling (simplified: just check squares empty, not attack checks here)
     if (player === 'w' && from === 60) {
-      if (castling.wK && board[61] === 0 && board[62] === 0 && board[63] === 4)
-        moves.push({ from, to: 62, castling: 'wK' })
-      if (castling.wQ && board[59] === 0 && board[58] === 0 && board[57] === 0 && board[56] === 4)
-        moves.push({ from, to: 58, castling: 'wQ' })
+      if (castling.wK && !board[61] && !board[62] && board[63] === 4) moves.push({ from, to: 62, castling: 'wK' })
+      if (castling.wQ && !board[59] && !board[58] && !board[57] && board[56] === 4) moves.push({ from, to: 58, castling: 'wQ' })
     }
     if (player === 'b' && from === 4) {
-      if (castling.bK && board[5] === 0 && board[6] === 0 && board[7] === -4)
-        moves.push({ from, to: 6, castling: 'bK' })
-      if (castling.bQ && board[3] === 0 && board[2] === 0 && board[1] === 0 && board[0] === -4)
-        moves.push({ from, to: 2, castling: 'bQ' })
+      if (castling.bK && !board[5] && !board[6] && board[7] === -4) moves.push({ from, to: 6, castling: 'bK' })
+      if (castling.bQ && !board[3] && !board[2] && !board[1] && board[0] === -4) moves.push({ from, to: 2, castling: 'bQ' })
     }
   }
 
+  /** FIXED: uses cloneChessState(), not the broken this.cloneState.call() */
   _applyMoveToState(state, move) {
-    const ns = this.cloneState.call({ state })
-    const { board } = ns.state
-    board[move.to] = move.promotion || board[move.from]
+    const ns    = cloneChessState(state)
+    const board = ns.board
+
+    board[move.to]   = move.promotion || board[move.from]
     board[move.from] = 0
+
     if (move.enPassantCapture) board[move.to + (state.currentPlayer === 'w' ? 8 : -8)] = 0
-    if (move.castling === 'wK') { board[61] = 4; board[63] = 0 }
-    if (move.castling === 'wQ') { board[59] = 4; board[56] = 0 }
-    if (move.castling === 'bK') { board[5] = -4; board[7] = 0 }
-    if (move.castling === 'bQ') { board[3] = -4; board[0] = 0 }
-    ns.state.enPassant = move.doublePush ? (move.to + (state.currentPlayer === 'w' ? 8 : -8)) : null
+    if (move.castling === 'wK') { board[61] = 4;  board[63] = 0 }
+    if (move.castling === 'wQ') { board[59] = 4;  board[56] = 0 }
+    if (move.castling === 'bK') { board[5]  = -4; board[7]  = 0 }
+    if (move.castling === 'bQ') { board[3]  = -4; board[0]  = 0 }
+
+    ns.enPassant = move.doublePush
+      ? (move.to + (state.currentPlayer === 'w' ? 8 : -8))
+      : null
+
     if (move.castling) {
-      if (move.castling.startsWith('w')) { ns.state.castling.wK = false; ns.state.castling.wQ = false }
-      else { ns.state.castling.bK = false; ns.state.castling.bQ = false }
+      if (move.castling.startsWith('w')) { ns.castling.wK = false; ns.castling.wQ = false }
+      else                               { ns.castling.bK = false; ns.castling.bQ = false }
     }
-    ns.state.currentPlayer = state.currentPlayer === 'w' ? 'b' : 'w'
-    const inCheck = this._isInCheck(ns.state, ns.state.currentPlayer)
-    const legalNext = this._generateLegalMoves(ns.state)
-    ns.state.check = inCheck
-    ns.state.checkmate = inCheck && legalNext.length === 0
-    ns.state.stalemate = !inCheck && legalNext.length === 0
-    ns.state.gameOver = ns.state.checkmate || ns.state.stalemate
-    ns.state.winner = ns.state.checkmate ? state.currentPlayer : null
-    ns.state.moveHistory = [...state.moveHistory, move]
-    return ns.state
+    // Invalidate castling if king or rook moved
+    const abs = Math.abs(state.board[move.from])
+    if (abs === KING) {
+      if (state.currentPlayer === 'w') { ns.castling.wK = false; ns.castling.wQ = false }
+      else                             { ns.castling.bK = false; ns.castling.bQ = false }
+    }
+    if (abs === ROOK) {
+      if (move.from === 63) ns.castling.wK = false
+      if (move.from === 56) ns.castling.wQ = false
+      if (move.from === 7)  ns.castling.bK = false
+      if (move.from === 0)  ns.castling.bQ = false
+    }
+
+    ns.currentPlayer  = state.currentPlayer === 'w' ? 'b' : 'w'
+    ns.moveHistory    = [...state.moveHistory, move]
+
+    const inCheck   = this._isInCheck(ns, ns.currentPlayer)
+    const legalNext = this._generateLegalMoves(ns)
+    ns.check        = inCheck
+    ns.checkmate    = inCheck  && legalNext.length === 0
+    ns.stalemate    = !inCheck && legalNext.length === 0
+    ns.gameOver     = ns.checkmate || ns.stalemate
+    ns.winner       = ns.checkmate ? state.currentPlayer : null
+
+    return ns
   }
 
   _isInCheck(state, player) {
     const sign = player === 'w' ? 1 : -1
-    // Find king
-    const kingIdx = state.board.findIndex(p => p === 6 * sign)
+    const kingIdx = state.board.findIndex(p => p === KING * sign)
     if (kingIdx === -1) return true
-    // Check if any enemy can reach king
     const opp = { ...state, currentPlayer: player === 'w' ? 'b' : 'w' }
-    const oppMoves = this._generatePseudoLegal(opp)
-    return oppMoves.some(m => m.to === kingIdx)
+    return this._generatePseudoLegal(opp).some(m => m.to === kingIdx)
   }
 
-  static symbolFor(piece) { return SYMBOL[String(piece)] || '' }
+  static symbolFor(piece) { return SYM[String(piece)] || '' }
 }
+
+// ─── Chess AI (alpha-beta, depth 1-5) ────────────────────────────────────────
+const VALUES = [0, 100, 320, 330, 500, 900, 20000]
 
 export class ChessAI extends BaseAIEngine {
   getBestMove(engine) {
     if (this.level === 0) return this.randomMove(engine)
-    const depth = this.getDepth()
-    const result = this._minimax(engine.state, depth, -Infinity, Infinity, true, engine.state.currentPlayer, engine)
+    const result = this._minimax(engine, engine.state, this.getDepth(), -Infinity, Infinity, true, engine.state.currentPlayer)
     return result.move || this.randomMove(engine)
   }
 
-  _minimax(state, depth, alpha, beta, isMax, aiPlayer, eng) {
-    if (depth === 0 || state.gameOver) return { score: this._evaluate(state, aiPlayer) }
+  _minimax(eng, state, depth, alpha, beta, isMax, aiPlayer) {
+    if (depth === 0 || state.gameOver) return { score: this._eval(state, aiPlayer) }
     const moves = eng._generateLegalMoves(state)
     if (!moves.length) return { score: isMax ? -9999 : 9999 }
     let best = { score: isMax ? -Infinity : Infinity, move: null }
     for (const move of moves) {
       const ns = eng._applyMoveToState(state, move)
-      const r = this._minimax(ns, depth - 1, alpha, beta, !isMax, aiPlayer, eng)
+      const r  = this._minimax(eng, ns, depth - 1, alpha, beta, !isMax, aiPlayer)
       if (isMax ? r.score > best.score : r.score < best.score) best = { score: r.score, move }
       if (isMax) alpha = Math.max(alpha, best.score)
-      else beta = Math.min(beta, best.score)
+      else       beta  = Math.min(beta,  best.score)
       if (beta <= alpha) break
     }
     return best
   }
 
-  _evaluate(state, player) {
+  _eval(state, player) {
     const sign = player === 'w' ? 1 : -1
-    const VALUES = [0, 100, 320, 330, 500, 900, 20000]
     let score = 0
     for (const p of state.board) {
-      if (p === 0) continue
+      if (!p) continue
       score += Math.sign(p) * sign * VALUES[Math.abs(p)]
     }
-    if (state.checkmate && state.winner !== player) score -= 9999
-    if (state.checkmate && state.winner === player) score += 9999
+    if (state.checkmate) score += state.winner === player ? 9999 : -9999
     return score
   }
 }

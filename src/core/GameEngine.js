@@ -1,101 +1,62 @@
 /**
- * BaseGameEngine — abstract contract every game engine must satisfy.
- * Rules are ALWAYS separate from rendering.
- * Engines are pure JS with no React/DOM dependencies.
+ * BaseGameEngine — contract every game engine must implement.
+ * Engines are pure JS with zero React / DOM dependency.
+ * Rules are always separate from rendering.
  */
+export const MODE = { solo:'solo', local2p:'local2p', aiVsAi:'aiVsAi' }
 
 export class BaseGameEngine {
-  constructor(config = {}) {
-    this.config = config
-    this.state = null
-  }
+  constructor(config = {}) { this.config = config; this.state = null }
 
-  /** Initialize a fresh game. Must set this.state. */
-  initializeGame(options = {}) { throw new Error('Not implemented: initializeGame') }
+  initializeGame(options = {}) { throw new Error('initializeGame not implemented') }
+  getLegalMoves()              { throw new Error('getLegalMoves not implemented') }
+  applyMove(move)              { throw new Error('applyMove not implemented') }
+  isGameOver()                 { throw new Error('isGameOver not implemented') }
+  getResult()                  { throw new Error('getResult not implemented') }
 
-  /** Return array of legal moves for the current player. */
-  getLegalMoves() { throw new Error('Not implemented: getLegalMoves') }
-
-  /**
-   * Apply a move. Returns { success, newState, error }.
-   * Never mutates state directly — return a new state.
-   */
-  applyMove(move) { throw new Error('Not implemented: applyMove') }
-
-  /** Undo the last move. Returns { success, newState }. */
-  undoMove() { return { success: false, reason: 'Undo not supported' } }
-
-  /** Returns true/false */
-  isGameOver() { throw new Error('Not implemented: isGameOver') }
-
-  /**
-   * Returns { winner: playerId|'draw'|null, reason: string }
-   * winner is null if game is not over.
-   */
-  getResult() { throw new Error('Not implemented: getResult') }
-
-  /** Return a plain JS object (safe to JSON.stringify). */
-  serializeState() {
-    return JSON.parse(JSON.stringify(this.state))
-  }
-
-  /** Restore state from serialized object. */
-  deserializeState(serialized) {
-    this.state = JSON.parse(JSON.stringify(serialized))
-  }
-
-  /** Return hint moves (subset of legal moves, ranked). */
-  getHints() { return this.getLegalMoves().slice(0, 3) }
-
-  /** Validate a move without applying it. Returns { valid, reason }. */
-  validateMove(move) {
-    const legal = this.getLegalMoves()
-    const isLegal = legal.some(m => JSON.stringify(m) === JSON.stringify(move))
-    return { valid: isLegal, reason: isLegal ? 'OK' : 'Illegal move' }
-  }
-
-  /** Returns current turn player id */
+  undoMove()       { return { success: false, reason: 'Undo not supported' } }
   getCurrentPlayer() { return this.state?.currentPlayer ?? null }
+  getScore()         { return this.state?.score ?? {} }
 
-  /** Returns game score object */
-  getScore() { return this.state?.score ?? {} }
-
-  /** Deep clone state safely */
+  /** Deep clone any state object — pure utility, does not touch `this.state`. */
   cloneState(state = this.state) {
     return JSON.parse(JSON.stringify(state))
   }
+
+  serializeState()      { return this.cloneState(this.state) }
+  deserializeState(obj) { this.state = this.cloneState(obj) }
+
+  getHints() {
+    const moves = this.getLegalMoves()
+    return moves.slice(0, 3)
+  }
+
+  validateMove(move) {
+    const legal  = this.getLegalMoves()
+    const moveStr = JSON.stringify(move)
+    const valid  = legal.some(m => JSON.stringify(m) === moveStr)
+    return { valid, reason: valid ? 'OK' : 'Illegal move' }
+  }
 }
 
-/**
- * BaseAIEngine — abstract contract for AI per game.
- */
 export class BaseAIEngine {
   constructor(difficulty = 'normal') {
     this.difficulty = difficulty
-    this.difficultyMap = { beginner: 0, easy: 1, normal: 2, hard: 3, expert: 4 }
-    this.level = this.difficultyMap[difficulty] ?? 2
+    this._map = { beginner:0, easy:1, normal:2, hard:3, expert:4 }
+    this.level = this._map[difficulty] ?? 2
   }
 
-  /** Returns the best move for the given engine state. Async-safe. */
-  getBestMove(engine) { throw new Error('Not implemented: getBestMove') }
+  getBestMove(engine)              { throw new Error('getBestMove not implemented') }
+  evaluatePosition(state, player)  { return 0 }
 
-  /** Returns a numeric evaluation of the position for a player. */
-  evaluatePosition(state, playerId) { return 0 }
-
-  /** Returns hint move for the current player (non-AI context). */
   suggestHint(engine) {
-    const moves = engine.getLegalMoves()
-    return moves[Math.floor(Math.random() * moves.length)] || null
+    return this.randomMove(engine)
   }
 
-  /** Adjust thinking depth based on difficulty */
-  getDepth() {
-    return [1, 2, 3, 5, 7][this.level] ?? 2
-  }
+  getDepth() { return [1, 2, 3, 5, 7][this.level] ?? 2 }
 
-  /** Random move fallback */
   randomMove(engine) {
     const moves = engine.getLegalMoves()
-    return moves[Math.floor(Math.random() * moves.length)] || null
+    return moves.length ? moves[Math.floor(Math.random() * moves.length)] : null
   }
 }
