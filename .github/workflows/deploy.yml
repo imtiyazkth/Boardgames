@@ -10,7 +10,7 @@ permissions:
   id-token: write
 
 jobs:
-  # ── Job 1: Deploy to GitHub Pages ──────────────────────────────────────────
+  # ── Job 1: Deploy to GitHub Pages ──────────────────────────────────────
   deploy-web:
     runs-on: ubuntu-latest
     steps:
@@ -28,46 +28,63 @@ jobs:
           force_orphan: true
           enable_jekyll: false
 
-  # ── Job 2: Build Android APK ────────────────────────────────────────────────
+  # ── Job 2: Build Android APK ────────────────────────────────────────────
   build-apk:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Install deps & build web
         run: |
           npm ci
           npm run build
 
-      - name: Install Capacitor & add Android
+      - name: Install Capacitor
         run: |
-          npm install -g @capacitor/cli
-          npm install @capacitor/core @capacitor/android @capacitor/splash-screen @capacitor/status-bar
-          npx cap add android
-          npx cap sync android
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/splash-screen @capacitor/status-bar
+
+      - name: Add Android platform
+        run: npx cap add android || true
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses || true
 
       - name: Build Debug APK
+        working-directory: android
         run: |
-          cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug \
+            -Dorg.gradle.jvmargs="-Xmx2g" \
+            --no-daemon \
+            --stacktrace
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: BoardGames-debug-apk
+          name: BoardGames-v2-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
+
+      - name: Show APK size
+        run: |
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ -f "$APK" ]; then
+            echo "✅ APK built: $(du -sh $APK | cut -f1)"
+          fi

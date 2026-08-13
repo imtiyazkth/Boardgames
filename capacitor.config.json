@@ -2,22 +2,8 @@
   "appId": "io.github.imtiyazkth.boardgames",
   "appName": "Board Games",
   "webDir": "dist",
-  "bundledWebRuntime": false,
   "android": {
     "minWebViewVersion": 60,
-    "backgroundColor": "#0a0b14",
-    "allowMixedContent": false
-  },
-  "plugins": {
-    "SplashScreen": {
-      "launchShowDuration": 1200,
-      "backgroundColor": "#0a0b14",
-      "showSpinner": false
-    },
-    "StatusBar": {
-      "style": "dark",
-      "backgroundColor": "#0a0b14",
-      "overlaysWebView": false
-    }
+    "backgroundColor": "#0a0b14"
   }
 }
