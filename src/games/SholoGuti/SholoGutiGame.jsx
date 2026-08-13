@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { SholoGutiEngine, SholoGutiAI } from './engine.js'
 import { useAudio } from '../../hooks/useAudio.js'
+import GameShell from '../../components/GameShell.jsx'
 
 // 5×5 grid — 25 points (index = row*5 + col)
 // Adjacency includes diagonals on even-sum squares

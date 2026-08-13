@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { SlidingPuzzleEngine } from './engine.js'
 import { useAudio } from '../../hooks/useAudio.js'
+import GameShell from '../../components/GameShell.jsx'
 
 const SIZE = 4
 

@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import { SnakesLaddersEngine } from './engine.js'
 import { useAudio } from '../../hooks/useAudio.js'
+import GameShell from '../../components/GameShell.jsx'
 
 const SNAKES  = { 99:37,95:75,92:88,89:68,74:53,64:60,62:19,49:11,46:25,16:6 }
 const LADDERS = { 2:38,7:14,8:31,15:26,21:42,28:84,36:44,51:67,71:91,78:98,87:94 }

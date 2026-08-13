@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { CheckersEngine, CheckersAI } from './engine.js'
 import { useAudio } from '../../hooks/useAudio.js'
+import GameShell from '../../components/GameShell.jsx'
 
 export default function CheckersGame({ mode='solo', difficulty='normal', playerNames=[], onExit }) {
   const { play, vibrate } = useAudio()

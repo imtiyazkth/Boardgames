@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { NineMensMorrisEngine, MorrisAI, MORRIS_POINTS, MORRIS_LINES } from './engine.js'
 import { useAudio } from '../../hooks/useAudio.js'
+import GameShell from '../../components/GameShell.jsx'
 
 export default function NineMensMorrisGame({ mode='solo', difficulty='normal', playerNames=[], onExit }) {
   const { play, vibrate } = useAudio()
