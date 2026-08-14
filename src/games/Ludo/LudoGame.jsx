@@ -1,547 +1,564 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { LudoEngine, LudoAI } from './engine.js'
+import { LudoEngine, LudoAI, SAFE_ZONES, TRACK, HOME_PATH, YARD_SLOTS,
+         getTokenCoord, getAbsoluteTrackPos, PLAYER_ENTRY } from './engine.js'
 import { useAudio } from '../../hooks/useAudio.js'
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-const PC = ['#e53935','#1565c0','#2e7d32','#f9a825']   // Red Blue Green Yellow
-const PL = ['#ef9a9a','#90caf9','#a5d6a7','#fff176']   // Light tints
-const PN = ['Red','Blue','Green','Yellow']
-const PE = ['🔴','🔵','🟢','🟡']
-const SAFE = new Set([0,8,13,21,26,34,39,47])
-const PLAYER_START = [0,13,26,39]
+const PC  = ['#e53935','#1565c0','#2e7d32','#f9a825']  // Red Blue Green Yellow
+const PCL = ['#ef9a9a','#90caf9','#a5d6a7','#fff176']  // Light
+const PE  = ['🔴','🔵','🟢','🟡']
+const DICE_FACE = ['','⚀','⚁','⚂','⚃','⚄','⚅']
+const GRID = 15
 
-// 52-cell main track: [col, row] on 15×15 grid (same as Ludo King layout)
-const TRACK = [
-  // Red entry (bottom-left going up col 6)
-  [6,13],[6,12],[6,11],[6,10],[6,9],[6,8],
-  // left arm →
-  [5,8],[4,8],[3,8],[2,8],[1,8],[0,8],
-  [0,7],[0,6],
-  // top-left arm →
-  [1,6],[2,6],[3,6],[4,6],[5,6],
-  [6,5],[6,4],[6,3],[6,2],[6,1],[6,0],
-  [7,0],[8,0],
-  // right side ↓
-  [8,1],[8,2],[8,3],[8,4],[8,5],
-  [9,6],[10,6],[11,6],[12,6],[13,6],[14,6],
-  [14,7],[14,8],
-  // bottom-right arm ←
-  [13,8],[12,8],[11,8],[10,8],[9,8],
-  [8,9],[8,10],[8,11],[8,12],[8,13],
-  [8,14],[7,14],
-]
+// ─── SVG Board ────────────────────────────────────────────────────────────────
+function LudoBoard({ state, legalTokens, onTokenClick }) {
+  if (!state) return null
+  const G = 38
 
-// Home columns per player (5 steps into centre)
-const HOME_PATH = [
-  [[7,13],[7,12],[7,11],[7,10],[7,9]],  // Red   → center
-  [[1,7],[2,7],[3,7],[4,7],[5,7]],       // Blue  → center
-  [[7,1],[7,2],[7,3],[7,4],[7,5]],       // Green → center
-  [[13,7],[12,7],[11,7],[10,7],[9,7]],   // Yellow→ center
-]
+  const YARD_BG = [
+    { x:0,   y:9*G,  w:6*G, h:6*G, fill:'#e53935', p:0 },  // Red
+    { x:9*G, y:0,    w:6*G, h:6*G, fill:'#1565c0', p:1 },  // Blue
+    { x:0,   y:0,    w:6*G, h:6*G, fill:'#2e7d32', p:2 },  // Green
+    { x:9*G, y:9*G,  w:6*G, h:6*G, fill:'#f9a825', p:3 },  // Yellow
+  ]
 
-// Home yard 4-slot positions per player
-const YARD = [
-  [[2,11],[3,11],[2,12],[3,12]],  // Red   bottom-left
-  [[11,2],[12,2],[11,3],[12,3]],  // Blue  top-right
-  [[2,2],[3,2],[2,3],[3,3]],      // Green top-left
-  [[11,11],[12,11],[11,12],[12,12]], // Yellow bottom-right
-]
+  const STRIPS = [
+    { x:6*G, y:9*G,  w:3*G, h:6*G, fill:'#ef9a9a' },  // Red home strip
+    { x:9*G, y:6*G,  w:6*G, h:3*G, fill:'#90caf9' },  // Blue home strip
+    { x:6*G, y:0,    w:3*G, h:6*G, fill:'#a5d6a7' },  // Green home strip
+    { x:0,   y:6*G,  w:6*G, h:3*G, fill:'#fff176' },  // Yellow home strip
+  ]
 
-const GRID = 15   // cells per side
-const DICE_FACES = ['','⚀','⚁','⚂','⚃','⚄','⚅']
-
-function tokenCoord(player, pos, tokenIdx) {
-  if (pos === -1) {
-    const [c,r] = YARD[player][tokenIdx]
-    return { cx: c, cy: r }
-  }
-  if (pos >= 52 && pos <= 56) {
-    const [c,r] = HOME_PATH[player][pos-52]
-    return { cx: c, cy: r }
-  }
-  if (pos === 57) return { cx: 7, cy: 7 }  // center
-  const [c,r] = TRACK[pos % 52]
-  return { cx: c, cy: r }
-}
-
-// ─── Board SVG renderer ───────────────────────────────────────────────────────
-function LudoBoard({ state, onTokenClick, legalTokens }) {
-  const G = 40   // px per grid cell in SVG (15×15 = 600)
   const S = GRID * G
 
-  // Colour zones for 3×3 home yard quadrants
-  const ZONES = [
-    { x:0,   y:6*G, w:6*G, h:3*G, fill:'#c8e6c9', label:'🟢', lx:3*G, ly:7.5*G },  // Green left strip
-    { x:9*G, y:6*G, w:6*G, h:3*G, fill:'#fff9c4', label:'🟡', lx:12*G,ly:7.5*G }, // Yellow right strip
-    { x:6*G, y:0,   w:3*G, h:6*G, fill:'#ef9a9a', label:'🔴', lx:7.5*G,ly:3*G }, // Red top strip
-    { x:6*G, y:9*G, w:3*G, h:6*G, fill:'#bbdefb', label:'🔵', lx:7.5*G,ly:12*G}, // Blue bottom strip
-  ]
-
-  // Home yard quadrant fills
-  const YARDS = [
-    { x:0,   y:9*G,  w:6*G, h:6*G, fill:'#e53935' },  // Red yard   (bottom-left)
-    { x:9*G, y:0,    w:6*G, h:6*G, fill:'#1565c0' },  // Blue yard  (top-right)
-    { x:0,   y:0,    w:6*G, h:6*G, fill:'#2e7d32' },  // Green yard (top-left)
-    { x:9*G, y:9*G,  w:6*G, h:6*G, fill:'#f9a825' },  // Yellow yard(bottom-right)
-  ]
+  // Build token map: coord -> [{player,token,stepCount}]
+  const tokenMap = {}
+  state.tokens.forEach((playerTokens, p) => {
+    playerTokens.forEach((tok, t) => {
+      const coord = getTokenCoord(p, tok.stepCount, t)
+      const key = `${coord.c},${coord.r}`
+      if (!tokenMap[key]) tokenMap[key] = []
+      tokenMap[key].push({ p, t, tok })
+    })
+  })
 
   return (
-    <svg viewBox={`0 0 ${S} ${S}`} width="100%" style={{ maxWidth:420, display:'block' }}>
-      {/* Background */}
-      <rect width={S} height={S} fill="#f5f5f5"/>
+    <svg viewBox={`0 0 ${S} ${S}`} width="100%" style={{ maxWidth:440, display:'block' }}>
+      <rect width={S} height={S} fill="#f0f0f0" rx={8}/>
 
       {/* Yard quadrants */}
-      {YARDS.map((z,i)=>(
-        <g key={`yard${i}`}>
-          <rect x={z.x} y={z.y} width={z.w} height={z.h} fill={z.fill} rx={G*0.3}/>
-          {/* Inner white box */}
+      {YARD_BG.map((z,i) => (
+        <g key={i}>
+          <rect x={z.x} y={z.y} width={z.w} height={z.h} fill={z.fill} rx={G*0.25}/>
           <rect x={z.x+G*0.5} y={z.y+G*0.5} width={z.w-G} height={z.h-G}
-            fill="rgba(255,255,255,0.25)" rx={G*0.2}/>
+            fill="rgba(255,255,255,0.25)" rx={G*0.15}/>
         </g>
       ))}
 
-      {/* Track strips (coloured) */}
-      {ZONES.map((z,i)=>(
-        <rect key={`zone${i}`} x={z.x} y={z.y} width={z.w} height={z.h} fill={z.fill} opacity={0.7}/>
+      {/* Home color strips */}
+      {STRIPS.map((s,i) => (
+        <rect key={i} x={s.x} y={s.y} width={s.w} height={s.h} fill={s.fill} opacity={0.7}/>
       ))}
 
-      {/* Grid cells */}
-      {Array.from({length:GRID},(_,r)=>Array.from({length:GRID},(_,c)=>{
-        const isSafe = SAFE.has(TRACK.findIndex(([tc,tr])=>tc===c&&tr===r))
+      {/* Track grid cells */}
+      {Array.from({length:GRID}, (_,r) => Array.from({length:GRID}, (_,c) => {
+        const inYard = (c<6&&r<6)||(c>8&&r<6)||(c<6&&r>8)||(c>8&&r>8)
         const isCenter = c>=6&&c<=8&&r>=6&&r<=8
-        if (isCenter) return null
-        // Skip yard areas
-        if ((c<6&&r<6)||(c>8&&r<6)||(c<6&&r>8)||(c>8&&r>8)) return null
+        if (inYard || isCenter) return null
+        // Find if this cell is a safe zone
+        const trackIdx = TRACK.findIndex(([tc,tr]) => tc===c&&tr===r)
+        const isSafe = trackIdx>=0 && SAFE_ZONES.has(trackIdx)
         return (
-          <rect key={`${r}-${c}`} x={c*G} y={r*G} width={G} height={G}
-            fill={isSafe?'rgba(255,255,255,0.6)':'rgba(255,255,255,0.15)'}
-            stroke="rgba(0,0,0,0.08)" strokeWidth={0.5}/>
+          <rect key={`${r}${c}`} x={c*G} y={r*G} width={G} height={G}
+            fill={isSafe ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)'}
+            stroke="rgba(0,0,0,0.06)" strokeWidth={0.5}/>
         )
       }))}
 
-      {/* Safe zone stars */}
-      {SAFE.forEach(si => {
-        if (si < 52) {
-          const [c,r] = TRACK[si]
-          return <text key={`star${si}`} x={c*G+G/2} y={r*G+G/2+4} textAnchor="middle" fontSize={G*0.5}>⭐</text>
-        }
-      })}
-      {[...SAFE].filter(s=>s<52).map(s=>{
-        const [c,r]=TRACK[s]
-        return <text key={`st${s}`} x={c*G+G/2} y={r*G+G*0.65} textAnchor="middle" fontSize={G*0.55} opacity={0.8}>★</text>
+      {/* Star markers on safe zones */}
+      {[...SAFE_ZONES].filter(s => s<52).map(s => {
+        const [c,r] = TRACK[s]
+        return (
+          <text key={s} x={c*G+G/2} y={r*G+G*0.68}
+            textAnchor="middle" fontSize={G*0.5} opacity={0.6}>★</text>
+        )
       })}
 
-      {/* Center star */}
+      {/* Center diamond */}
       <polygon
-        points={`${7.5*G},${6.2*G} ${8*G},${7.5*G} ${7.5*G},${8.8*G} ${7*G},${7.5*G}`}
-        fill="gold" stroke="rgba(0,0,0,0.2)" strokeWidth={1}/>
-      <text x={7.5*G} y={7.5*G+5} textAnchor="middle" fontSize={G*0.7} fontWeight="bold" fill="#fff">★</text>
+        points={`${7.5*G},${6.3*G} ${8.7*G},${7.5*G} ${7.5*G},${8.7*G} ${6.3*G},${7.5*G}`}
+        fill="#ffd700" stroke="rgba(0,0,0,0.2)" strokeWidth={1}/>
+      <text x={7.5*G} y={7.5*G+5} textAnchor="middle"
+        fontSize={G*0.65} fontWeight="bold" fill="#fff">★</text>
 
       {/* Tokens */}
-      {state && state.tokens.map((playerTokens, p) =>
-        playerTokens.map((pos, t) => {
-          const { cx, cy } = tokenCoord(p, pos, t)
-          const isLegal = legalTokens.includes(`${p}-${t}`)
-          const r = G * 0.34
+      {Object.entries(tokenMap).map(([key, tokens]) => {
+        const [c,r] = key.split(',').map(Number)
+        const cx = (c+0.5)*G, cy = (r+0.5)*G
+        const count = tokens.length
+        return tokens.map(({ p, t, tok }, idx) => {
+          const isLegal = legalTokens.some(l => l.p===p&&l.t===t)
+          const radius = count > 1 ? G*0.22 : G*0.32
+
+          // Offset for stacking
+          let ox=0, oy=0
+          if (count===2) { ox=(idx===0?-1:1)*G*0.18; }
+          if (count===3) { ox=(idx-1)*G*0.18; oy=idx===1?-G*0.15:G*0.1 }
+          if (count===4) {
+            ox=(idx%2===0?-1:1)*G*0.16
+            oy=(idx<2?-1:1)*G*0.16
+          }
+
           return (
-            <g key={`p${p}t${t}`}
-              onClick={() => isLegal && onTokenClick(p, t)}
-              style={{ cursor: isLegal ? 'pointer' : 'default' }}>
-              {/* Pulse ring for selectable tokens */}
+            <g key={`${p}${t}`}
+              onClick={() => isLegal && onTokenClick(p,t)}
+              style={{ cursor: isLegal?'pointer':'default' }}>
+              {/* Bounce ring for selectable */}
               {isLegal && (
-                <circle cx={(cx+0.5)*G} cy={(cy+0.5)*G} r={r*1.5}
+                <circle cx={cx+ox} cy={cy+oy} r={radius*1.6}
                   fill="none" stroke={PC[p]} strokeWidth={2} opacity={0.5}
-                  style={{ animation:'pulse 0.9s ease-in-out infinite' }}/>
+                  style={{ animation:'ludoPulse 0.8s ease-in-out infinite' }}/>
               )}
-              {/* Token shadow */}
-              <circle cx={(cx+0.5)*G+1} cy={(cy+0.5)*G+2} r={r} fill="rgba(0,0,0,0.3)"/>
-              {/* Token body */}
-              <circle cx={(cx+0.5)*G} cy={(cy+0.5)*G} r={r}
-                fill={PC[p]} stroke="#fff" strokeWidth={1.5}/>
-              {/* Inner dot */}
-              <circle cx={(cx+0.5)*G} cy={(cy+0.5)*G} r={r*0.4}
-                fill="rgba(255,255,255,0.6)"/>
-              {/* Bounce when selectable */}
+              {/* Shadow */}
+              <circle cx={cx+ox+1} cy={cy+oy+2} r={radius} fill="rgba(0,0,0,0.25)"/>
+              {/* Body */}
+              <circle cx={cx+ox} cy={cy+oy} r={radius}
+                fill={PC[p]} stroke="#fff" strokeWidth={count>1?1:1.5}/>
+              {/* Inner */}
+              <circle cx={cx+ox} cy={cy+oy} r={radius*0.45}
+                fill="rgba(255,255,255,0.55)"/>
+              {/* Bounce overlay */}
               {isLegal && (
-                <circle cx={(cx+0.5)*G} cy={(cy+0.5)*G} r={r}
-                  fill="none" stroke="#fff" strokeWidth={1.5} opacity={0.4}
-                  style={{ animation:`tokenBounce 0.6s ease-in-out infinite alternate` }}/>
+                <circle cx={cx+ox} cy={cy+oy} r={radius}
+                  fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth={1.5}
+                  style={{ animation:'ludoBounce 0.5s ease-in-out infinite alternate' }}/>
               )}
             </g>
           )
         })
-      )}
+      })}
 
       <style>{`
-        @keyframes pulse {
-          0%,100% { r:${40*0.34*1.4}; opacity:0.6 }
-          50%      { r:${40*0.34*1.8}; opacity:0.2 }
+        @keyframes ludoPulse {
+          0%,100%{r:${38*0.32*1.6};opacity:0.6}
+          50%{r:${38*0.32*2.0};opacity:0.2}
         }
-        @keyframes tokenBounce {
-          from { transform: translateY(0); }
-          to   { transform: translateY(-3px); }
+        @keyframes ludoBounce {
+          from{transform:translateY(0)}
+          to{transform:translateY(-3px)}
         }
       `}</style>
     </svg>
   )
 }
 
-// ─── Dice Component ───────────────────────────────────────────────────────────
-function DiceButton({ value, rolling, onRoll, canRoll, color }) {
+// ─── Player Panel ─────────────────────────────────────────────────────────────
+function PlayerPanel({ name, color, emoji, isActive, isAI, tokensDone, isHuman }) {
+  return (
+    <div style={{
+      flex:1, minWidth:0, padding:'7px 8px', borderRadius:12,
+      background: isActive ? `${color}28` : 'rgba(255,255,255,0.04)',
+      border:`2px solid ${isActive ? color : 'rgba(255,255,255,0.08)'}`,
+      boxShadow: isActive ? `0 0 18px ${color}40` : 'none',
+      transition:'all 0.25s', position:'relative', overflow:'hidden',
+    }}>
+      {/* Top bar when active */}
+      {isActive && (
+        <div style={{
+          position:'absolute',top:0,left:0,right:0,height:2.5,
+          background:`linear-gradient(90deg,${color},${color}50)`,
+        }}/>
+      )}
+      <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:3 }}>
+        <div style={{
+          width:20, height:20, borderRadius:'50%',
+          background: color, flexShrink:0,
+          boxShadow: isActive ? `0 0 8px ${color}` : 'none',
+          border:'1.5px solid rgba(255,255,255,0.3)',
+          display:'flex', alignItems:'center', justifyContent:'center',
+          fontSize:10,
+        }}>
+          {isAI && !isHuman ? '🤖' : ''}
+        </div>
+        <div style={{
+          color: isActive ? '#fff' : 'rgba(255,255,255,0.45)',
+          fontWeight:700, fontSize:11,
+          overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1,
+        }}>{name}</div>
+        {isActive && (
+          <div style={{
+            width:6, height:6, borderRadius:'50%', background:color,
+            flexShrink:0, animation:'glowPulse 0.9s ease-in-out infinite',
+          }}/>
+        )}
+      </div>
+      {/* Token progress dots */}
+      <div style={{ display:'flex', gap:3 }}>
+        {[0,1,2,3].map(i => (
+          <div key={i} style={{
+            width:6, height:6, borderRadius:'50%',
+            background: i<tokensDone ? color : 'rgba(255,255,255,0.12)',
+            boxShadow: i<tokensDone ? `0 0 5px ${color}` : 'none',
+          }}/>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Dice ─────────────────────────────────────────────────────────────────────
+function Dice({ value, rolling, canRoll, onRoll, color }) {
   return (
     <button onClick={onRoll} disabled={!canRoll || rolling} style={{
-      width: 60, height: 60, borderRadius: 14,
-      background: canRoll ? `linear-gradient(135deg,#fff,#f0f0f0)` : 'rgba(255,255,255,0.1)',
-      border: `3px solid ${canRoll ? color : 'rgba(255,255,255,0.15)'}`,
-      fontSize: 36, cursor: canRoll ? 'pointer' : 'default',
+      width:58, height:58, borderRadius:14, flexShrink:0,
+      background: canRoll ? '#fff' : 'rgba(255,255,255,0.08)',
+      border:`3px solid ${canRoll ? color : 'rgba(255,255,255,0.12)'}`,
+      fontSize:34, cursor: canRoll?'pointer':'default',
       display:'flex', alignItems:'center', justifyContent:'center',
-      boxShadow: canRoll ? `0 4px 20px ${color}60, 0 2px 8px rgba(0,0,0,0.3)` : 'none',
-      transition:'all 0.2s',
-      transform: rolling ? 'rotate(20deg) scale(0.9)' : canRoll ? 'scale(1.05)' : 'scale(1)',
-      animation: rolling ? 'diceRoll 0.15s ease-in-out infinite alternate' : 'none',
-      flexShrink:0,
+      boxShadow: canRoll ? `0 4px 20px ${color}60` : 'none',
+      transition:'all 0.15s',
+      transform: rolling ? 'rotate(15deg) scale(0.9)' : canRoll ? 'scale(1.04)' : 'scale(1)',
+      animation: rolling ? 'diceRoll 0.12s ease-in-out infinite alternate' : 'none',
     }}>
-      {value ? DICE_FACES[value] : canRoll ? '🎲' : '⬜'}
+      {value ? DICE_FACE[value] : canRoll ? '🎲' : '⬜'}
+      <style>{`@keyframes diceRoll{from{transform:rotate(-12deg)scale(0.88)}to{transform:rotate(12deg)scale(1.05)}}`}</style>
     </button>
   )
 }
 
-// ─── Player Panel ─────────────────────────────────────────────────────────────
-function PlayerPanel({ name, color, tint, emoji, score, isActive, isAI, tokensDone, timer }) {
+// ─── Victory Modal ────────────────────────────────────────────────────────────
+function VictoryModal({ winner, names, colors, onRestart, onExit }) {
   return (
     <div style={{
-      flex:1, padding:'8px 10px', borderRadius:14, transition:'all 0.25s',
-      background: isActive ? `linear-gradient(135deg,${color}30,${color}15)` : 'rgba(255,255,255,0.04)',
-      border:`2px solid ${isActive ? color : 'rgba(255,255,255,0.08)'}`,
-      boxShadow: isActive ? `0 0 20px ${color}40` : 'none',
-      position:'relative', overflow:'hidden',
+      position:'absolute', inset:0, background:'rgba(0,0,0,0.88)',
+      display:'flex', alignItems:'center', justifyContent:'center', zIndex:50,
     }}>
-      {isActive && (
-        <div style={{
-          position:'absolute', top:0, left:0, right:0, height:3,
-          background:`linear-gradient(90deg,${color},${color}80)`,
-          animation:'timerBar 15s linear forwards',
-        }}/>
-      )}
-      <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
-        <span style={{ fontSize:18 }}>{emoji}</span>
-        <div>
-          <div style={{ color: isActive?'#fff':'rgba(255,255,255,0.45)', fontWeight:800, fontSize:12,
-            maxWidth:70, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-            {isAI?'🤖 ':''}{name}
-          </div>
-          <div style={{ display:'flex', gap:2, marginTop:2 }}>
-            {[0,1,2,3].map(i=>(
-              <div key={i} style={{ width:7, height:7, borderRadius:'50%',
-                background: i<tokensDone ? color : 'rgba(255,255,255,0.15)',
-                border:`1px solid ${i<tokensDone?color:'rgba(255,255,255,0.1)'}`,
-                boxShadow: i<tokensDone?`0 0 6px ${color}`:'none',
-              }}/>
-            ))}
-          </div>
+      <div style={{
+        background:'linear-gradient(160deg,#1a1e30,#0f1220)',
+        borderRadius:24, padding:'28px 24px', textAlign:'center', width:280,
+        border:`2px solid ${colors[winner]}`,
+        boxShadow:`0 20px 60px ${colors[winner]}50`,
+        animation:'popIn 0.4s cubic-bezier(0.34,1.56,0.64,1)',
+      }}>
+        <div style={{fontSize:56,marginBottom:8}}>🏆</div>
+        <div style={{fontSize:26,fontWeight:900,color:'#fff',marginBottom:4}}>
+          {names[winner]} Wins!
+        </div>
+        <div style={{fontSize:13,color:'rgba(255,255,255,0.4)',marginBottom:18}}>
+          {PE[winner]} All tokens home!
+        </div>
+        <div style={{display:'flex',gap:8}}>
+          <button onClick={onExit} style={{
+            flex:1,padding:'12px 0',borderRadius:12,
+            border:'1px solid rgba(255,255,255,0.12)',
+            background:'rgba(255,255,255,0.06)',
+            color:'rgba(255,255,255,0.7)',fontSize:14,fontWeight:700,cursor:'pointer',
+          }}>🏠 Home</button>
+          <button onClick={onRestart} style={{
+            flex:2,padding:'12px 0',borderRadius:12,border:'none',
+            background:`linear-gradient(135deg,${colors[winner]},${colors[winner]}cc)`,
+            color:'#fff',fontSize:15,fontWeight:800,cursor:'pointer',
+          }}>▶ Play Again</button>
         </div>
       </div>
-      {isActive && (
-        <div style={{ width:6, height:6, borderRadius:'50%', background:color,
-          position:'absolute', bottom:8, right:8,
-          boxShadow:`0 0 10px ${color}`, animation:'glowPulse 1s ease-in-out infinite' }}/>
-      )}
     </div>
   )
 }
 
 // ─── Main Game ────────────────────────────────────────────────────────────────
-export default function LudoGame({ mode='solo', playerCount=4, playerNames, onExit }) {
+export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], onExit }) {
   const { play, vibrate } = useAudio()
-  const pc = Math.min(4, Math.max(2, playerCount))
-  const names = playerNames || PN.slice(0, pc)
-  const [engine] = useState(() => new LudoEngine())
-  const [state, setState] = useState(null)
-  const [ai] = useState(() => new LudoAI('normal'))
-  const [rolling, setRolling] = useState(false)
-  const [diceVal, setDiceVal] = useState(null)
-  const [legalTokens, setLegalTokens] = useState([])
-  const [msg, setMsg] = useState('')
-  const [scores, setScores] = useState(Array(pc).fill(0))
-  const animRef = useRef(false)
+  const pc = Math.min(4, Math.max(2, playerCount || 4))
 
-  const isHuman = useCallback(p => mode==='local2p' || p===0, [mode])
+  // Determine human players based on mode
+  const humanPlayers = mode==='local2p' ? [0,1]
+    : mode==='local3p' ? [0,1,2]
+    : mode==='local4p' ? [0,1,2,3]
+    : [0]  // solo: only player 0 is human
 
+  const names = playerNames.slice(0,pc).concat(
+    ['Red','Blue','Green','Yellow'].slice(playerNames.length,pc)
+  )
+
+  const [engine]  = useState(() => new LudoEngine())
+  const [ai]      = useState(() => new LudoAI('classic'))
+  const [state,   setState]    = useState(null)
+  const [rolling, setRolling]  = useState(false)
+  const [diceVal, setDiceVal]  = useState(null)
+  const [legalTokens, setLegal] = useState([])
+  const [msg,     setMsg]      = useState('')
+  const [msgTimer,setMsgTimer] = useState(null)
+  const aiBusy = useRef(false)
+
+  const isHuman = useCallback(p => humanPlayers.includes(p), [humanPlayers])
+
+  function showMsg(text, ms=2000) {
+    setMsg(text)
+    clearTimeout(msgTimer)
+    setMsgTimer(setTimeout(() => setMsg(''), ms))
+  }
+
+  // ── Start game ──────────────────────────────────────────────────────────────
   function startGame() {
-    engine.initializeGame({ playerCount:pc, playerNames:names })
-    const s = engine.cloneState()
-    setState(s); setDiceVal(null); setLegalTokens([]); setMsg('')
+    engine.initializeGame({ playerCount:pc, playerNames:names, humanPlayers })
+    setState(engine.cloneState())
+    setDiceVal(null); setLegal([]); setMsg('')
+    aiBusy.current = false
     play('game_start')
   }
 
   useEffect(() => { startGame() }, [])
 
-  // Compute legal tokens after dice roll
+  // Rebuild legal tokens when state changes
   useEffect(() => {
-    if (!state || state.dice===null || state.gameOver) { setLegalTokens([]); return }
-    const moves = engine.getLegalMoves().filter(m=>m.action==='move')
-    setLegalTokens(moves.map(m=>`${state.currentPlayer}-${m.token}`))
+    if (!state || state.dice===null || state.gameOver) { setLegal([]); return }
+    const moves = engine.getValidMoves()
+    setLegal(moves.map(m => ({p:m.player,t:m.token})))
   }, [state])
 
-  // AI auto-play
+  // ── AI auto-play ────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!state || state.gameOver || animRef.current) return
+    if (!state || state.gameOver || aiBusy.current) return
     const p = state.currentPlayer
     if (isHuman(p)) return
 
-    // AI needs to roll
-    if (state.dice===null) {
+    aiBusy.current = true
+
+    if (state.dice === null) {
+      // AI rolls
       const t = setTimeout(() => {
-        handleRoll()
-      }, 700)
-      return ()=>clearTimeout(t)
+        doRoll()
+        aiBusy.current = false
+      }, 600)
+      return () => clearTimeout(t)
     }
 
-    // AI picks a move
+    // AI moves
     const t = setTimeout(() => {
       const move = ai.getBestMove(engine)
-      if (move && move.action==='move') handleTokenClick(p, move.token)
-      else if (move) {
-        const res = engine.applyMove(move)
-        if (res.success) { setState(engine.cloneState()); setDiceVal(null) }
-      }
-    }, 600)
-    return ()=>clearTimeout(t)
+      if (move) doApplyMove(move)
+      else { engine.autoPass(); setState(engine.cloneState()); setDiceVal(null) }
+      aiBusy.current = false
+    }, 700)
+    return () => clearTimeout(t)
   }, [state])
 
-  async function handleRoll() {
-    if (!state || state.dice!==null || rolling || animRef.current) return
+  // ── Roll dice ───────────────────────────────────────────────────────────────
+  async function doRoll() {
+    if (!state || state.dice!==null || rolling) return
     setRolling(true)
 
-    // Dice animation — 6 quick random frames
-    let frame = 0
-    const frames = 8
-    const anim = setInterval(()=>{
+    // Animate dice
+    let frame=0
+    const anim = setInterval(() => {
       setDiceVal(Math.ceil(Math.random()*6))
-      if (++frame>=frames) clearInterval(anim)
-    }, 80)
-
-    await new Promise(r=>setTimeout(r, frames*80+100))
+      if (++frame>=8) clearInterval(anim)
+    }, 75)
+    await new Promise(r => setTimeout(r, 650))
     setRolling(false)
 
-    const res = engine.applyMove({ action:'roll' })
-    if (res.success) {
-      const ns = engine.cloneState()
-      const d = ns.dice ?? res.newState?.dice
-      setDiceVal(ns.dice)
-      setState(ns)
-      play('ludo_dice'); vibrate([10])
+    const res = engine.rollDice()
+    setDiceVal(res.dice)
+    play('ludo_dice'); vibrate([10])
 
-      if (res.event==='three_sixes') {
-        setMsg('🚫 Three 6s! Turn skipped.')
-        setTimeout(()=>setMsg(''),2000)
+    const ns = engine.cloneState()
+    setState(ns)
+
+    if (res.event==='three_sixes') {
+      showMsg('🚫 Three 6s! Turn skipped.')
+      setDiceVal(null)
+    } else if (res.event==='no_moves') {
+      showMsg('😔 No moves available')
+      setTimeout(() => {
+        engine.autoPass()
+        setState(engine.cloneState())
         setDiceVal(null)
-      }
-
-      // Auto-pass if no moves
-      const moves = engine.getLegalMoves()
-      if (moves.length===1 && moves[0].action==='pass') {
-        setTimeout(()=>{
-          engine.applyMove({ action:'pass' })
-          setState(engine.cloneState())
-          setDiceVal(null); setMsg('')
-        }, 800)
-      }
+      }, 1500)
+    } else if (res.event==='auto_move' && res.autoMove) {
+      setTimeout(() => {
+        doApplyMove(res.autoMove)
+      }, 400)
     }
   }
 
-  async function handleTokenClick(player, tokenIdx) {
-    if (!state || state.currentPlayer!==player) return
-    const move = engine.getLegalMoves().find(m=>m.action==='move'&&m.token===tokenIdx)
-    if (!move) return
+  function handleRoll() {
+    const p = state?.currentPlayer
+    if (!isHuman(p)) return
+    doRoll()
+  }
 
-    animRef.current = true
-    play('ludo_move'); vibrate([8])
-
+  // ── Apply move ──────────────────────────────────────────────────────────────
+  function doApplyMove(move) {
     const res = engine.applyMove(move)
-    if (res.success) {
-      const ns = engine.cloneState()
-      setState(ns); setDiceVal(null); setLegalTokens([])
+    const ns  = engine.cloneState()
+    setState(ns)
+    setDiceVal(null); setLegal([])
 
-      if (res.event==='capture') {
-        play('ludo_capture'); vibrate([20,10,20])
-        setMsg(`💥 ${names[player]} cut a token!`)
-        setTimeout(()=>setMsg(''),2000)
-      }
-      if (res.event==='finish') {
-        play('ludo_finish'); vibrate([30,20,30,20,40])
-        setMsg(`🏠 Token home!`)
-        setTimeout(()=>setMsg(''),1500)
-      }
-      if (ns.gameOver) {
-        play('ttt_win'); vibrate([50,30,50,30,80])
-        setScores(s=>{ const n=[...s]; n[ns.winner]=(n[ns.winner]||0)+1; return n })
-        setMsg(`🏆 ${names[ns.winner]} wins!`)
-      }
+    if (res.event==='capture') {
+      play('ludo_capture'); vibrate([20,10,20])
+      showMsg(`💥 ${names[move.player]} cut a token!`)
+    } else if (res.event==='goal') {
+      play('ludo_finish'); vibrate([30,20,40])
+      showMsg(`🏠 Token home!`)
+    } else if (res.event==='entered') {
+      play('ludo_enter')
+      showMsg(`${names[move.player]} entered a token!`, 1000)
+    } else {
+      play('ludo_move')
     }
-    animRef.current = false
+
+    if (ns.gameOver) {
+      play('ttt_win'); vibrate([50,30,50,30,80])
+    }
+  }
+
+  function handleTokenClick(p, t) {
+    if (!state || state.gameOver || !isHuman(p)) return
+    if (state.currentPlayer !== p) return
+    const move = engine.getValidMoves().find(m => m.player===p && m.token===t)
+    if (!move) return
+    doApplyMove(move)
   }
 
   if (!state) return null
-  const { currentPlayer, dice, gameOver, tokens } = state
-  const canRoll = !gameOver && dice===null && isHuman(currentPlayer) && !animRef.current
-
-  const tokensDone = (p) => tokens[p].filter(t=>t===57).length
+  const { currentPlayer, dice, gameOver, winner } = state
+  const canRoll = !gameOver && dice===null && isHuman(currentPlayer) && !rolling
+  const tokensDone = p => state.tokens[p].filter(t=>t.status==='GOAL').length
 
   return (
     <div style={{
       display:'flex', flexDirection:'column', height:'100%',
-      background:`linear-gradient(160deg, ${PC[currentPlayer]}18 0%, #0a0b14 40%, #0d1020 100%)`,
-      userSelect:'none', overflow:'hidden',
+      background:`linear-gradient(160deg,${PC[currentPlayer]}18 0%,#0a0b14 40%,#0d1020 100%)`,
+      userSelect:'none', overflow:'hidden', position:'relative',
     }}>
 
       {/* ── Header ── */}
-      <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px 6px',
-        borderBottom:'1px solid rgba(255,255,255,0.06)', background:'rgba(0,0,0,0.2)', flexShrink:0 }}>
-        <button onClick={()=>{play('ui_back');onExit()}} style={{
+      <div style={{
+        display:'flex', alignItems:'center', gap:10,
+        padding:'10px 14px 6px', flexShrink:0,
+        borderBottom:'1px solid rgba(255,255,255,0.06)',
+        background:'rgba(0,0,0,0.2)',
+      }}>
+        <button onClick={() => { play('ui_back'); onExit() }} style={{
           background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.1)',
-          color:'#fff', fontSize:18, width:36, height:36, borderRadius:10, cursor:'pointer',
-          display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
+          color:'#fff', fontSize:18, width:36, height:36, borderRadius:10,
+          cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
         }}>←</button>
-        <span style={{ fontSize:22 }}>🎲</span>
-        <span style={{ color:'#fff', fontWeight:800, fontSize:18, flex:1 }}>Ludo</span>
-        <span style={{ fontSize:11, color:'rgba(255,255,255,0.3)', fontWeight:600, letterSpacing:0.5 }}>
-          {mode==='solo'?`${pc}P vs AI`:'Local '+pc+'P'}
+        <span style={{fontSize:22}}>🎲</span>
+        <span style={{color:'#fff',fontWeight:800,fontSize:18,flex:1}}>Ludo</span>
+        <span style={{fontSize:11,color:'rgba(255,255,255,0.3)',fontWeight:600,letterSpacing:0.5}}>
+          {mode==='solo' ? `${pc}P vs AI`
+            : mode==='local2p' ? 'Local 2P'
+            : mode==='local3p' ? 'Local 3P'
+            : 'Local 4P'}
         </span>
       </div>
 
-      {/* ── Player panels (2 top, 2 bottom or all 4) ── */}
-      <div style={{ display:'flex', gap:6, padding:'8px 12px 4px', flexShrink:0 }}>
-        {Array.from({length:Math.min(pc,4)},(_,i)=>(
+      {/* ── Player panels ── */}
+      <div style={{
+        display:'flex', gap:5, padding:'8px 12px 4px', flexShrink:0,
+        overflowX: pc>3 ? 'auto' : 'visible',
+      }}>
+        {Array.from({length:pc},(_,i)=>(
           <PlayerPanel key={i}
-            name={names[i]} color={PC[i]} tint={PL[i]} emoji={PE[i]}
-            score={scores[i]} isActive={currentPlayer===i&&!gameOver}
-            isAI={!isHuman(i)} tokensDone={tokensDone(i)}
+            name={names[i]} color={PC[i]} emoji={PE[i]}
+            isActive={currentPlayer===i&&!gameOver}
+            isAI={!isHuman(i)} isHuman={isHuman(i)}
+            tokensDone={tokensDone(i)}
           />
         ))}
       </div>
 
-      {/* ── Status message ── */}
-      <div style={{ height:28, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+      {/* ── Status ── */}
+      <div style={{height:26,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
         {msg ? (
-          <div style={{ fontSize:13, fontWeight:700, color:'#ffd700',
-            animation:'slideDown 0.2s ease', padding:'2px 12px',
-            background:'rgba(255,215,0,0.1)', borderRadius:20 }}>{msg}</div>
-        ) : !gameOver ? (
-          <div style={{ fontSize:12, fontWeight:600, color: PC[currentPlayer],
-            display:'flex', alignItems:'center', gap:5 }}>
-            <div style={{ width:8, height:8, borderRadius:'50%', background:PC[currentPlayer],
-              boxShadow:`0 0 8px ${PC[currentPlayer]}`, animation:'glowPulse 1s infinite' }}/>
+          <div style={{
+            fontSize:12,fontWeight:700,color:'#ffd700',padding:'2px 12px',
+            background:'rgba(255,215,0,0.1)',borderRadius:20,
+            animation:'slideDown 0.2s ease',
+          }}>{msg}</div>
+        ) : !gameOver && (
+          <div style={{display:'flex',alignItems:'center',gap:5,fontSize:12,fontWeight:600,color:PC[currentPlayer]}}>
+            <div style={{width:7,height:7,borderRadius:'50%',background:PC[currentPlayer],
+              animation:'glowPulse 0.9s infinite'}}/>
             {names[currentPlayer]}'s turn
-            {!isHuman(currentPlayer) && <span style={{ opacity:0.6 }}> · AI thinking…</span>}
+            {!isHuman(currentPlayer) && <span style={{opacity:0.5}}> · AI thinking…</span>}
           </div>
-        ) : null}
+        )}
       </div>
 
       {/* ── Board ── */}
-      <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center',
-        padding:'0 8px', minHeight:0, overflow:'hidden' }}>
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',
+        padding:'0 6px',minHeight:0,overflow:'hidden'}}>
         <LudoBoard
           state={state}
           legalTokens={legalTokens}
-          onTokenClick={(p,t) => isHuman(p) && !gameOver && handleTokenClick(p,t)}
+          onTokenClick={(p,t) => isHuman(p)&&!gameOver&&handleTokenClick(p,t)}
         />
       </div>
 
-      {/* ── Dice + controls ── */}
-      <div style={{ padding:'8px 14px 14px', flexShrink:0,
-        borderTop:'1px solid rgba(255,255,255,0.05)', background:'rgba(0,0,0,0.2)' }}>
-
+      {/* ── Controls ── */}
+      <div style={{
+        padding:'8px 14px 14px', flexShrink:0,
+        borderTop:'1px solid rgba(255,255,255,0.05)',
+        background:'rgba(0,0,0,0.2)',
+      }}>
         {!gameOver ? (
-          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-            {/* Dice */}
-            <DiceButton
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            <Dice
               value={diceVal} rolling={rolling}
-              onRoll={handleRoll} canRoll={canRoll}
+              canRoll={canRoll} onRoll={handleRoll}
               color={PC[currentPlayer]}
             />
-
-            <div style={{ flex:1 }}>
-              {/* Dice value display */}
+            <div style={{flex:1}}>
               {diceVal && (
-                <div style={{ color:'#fff', fontSize:13, fontWeight:800, marginBottom:4 }}>
-                  Rolled: <span style={{ color:PC[currentPlayer], fontSize:18 }}>{diceVal}</span>
-                  {diceVal===6&&<span style={{ color:'#ffd700', fontSize:11, marginLeft:6 }}>+1 bonus roll!</span>}
+                <div style={{color:'#fff',fontSize:13,fontWeight:800,marginBottom:3}}>
+                  Rolled: <span style={{color:PC[currentPlayer],fontSize:18}}>{diceVal}</span>
+                  {diceVal===6&&<span style={{color:'#ffd700',fontSize:11,marginLeft:6}}>+1 bonus!</span>}
                 </div>
               )}
-              {/* Instruction */}
-              <div style={{ color:'rgba(255,255,255,0.35)', fontSize:11 }}>
+              <div style={{color:'rgba(255,255,255,0.35)',fontSize:11}}>
                 {canRoll ? '👆 Tap dice to roll'
-                  : legalTokens.length>0 ? '👆 Tap a token to move'
+                  : legalTokens.length>0 ? '👆 Tap a glowing token'
                   : !isHuman(currentPlayer) ? '🤖 AI is playing…'
-                  : dice===null ? 'Waiting…' : ''}
+                  : ''}
               </div>
             </div>
-
-            {/* New game */}
             <button onClick={startGame} style={{
-              padding:'10px 14px', borderRadius:12, border:'none',
-              background:'rgba(255,255,255,0.1)', color:'#fff',
-              fontSize:12, fontWeight:700, cursor:'pointer', flexShrink:0,
+              padding:'10px 14px',borderRadius:12,border:'none',
+              background:'rgba(255,255,255,0.1)',color:'#fff',
+              fontSize:12,fontWeight:700,cursor:'pointer',flexShrink:0,
+              fontFamily:'inherit',
             }}>↺ New</button>
           </div>
         ) : (
-          <div style={{ display:'flex', gap:10 }}>
-            <button onClick={onExit} style={{ flex:1, padding:'13px 0', borderRadius:12,
-              border:'1px solid rgba(255,255,255,0.12)', background:'rgba(255,255,255,0.06)',
-              color:'rgba(255,255,255,0.7)', fontSize:14, fontWeight:700, cursor:'pointer' }}>
+          <div style={{display:'flex',gap:10}}>
+            <button onClick={onExit} style={{flex:1,padding:'13px 0',borderRadius:12,
+              border:'1px solid rgba(255,255,255,0.12)',background:'rgba(255,255,255,0.06)',
+              color:'rgba(255,255,255,0.7)',fontSize:14,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
               🏠 Home
             </button>
-            <button onClick={startGame} style={{ flex:2, padding:'13px 0', borderRadius:12,
-              border:'none', background:`linear-gradient(135deg,${PC[0]},${PC[1]})`,
-              color:'#fff', fontSize:15, fontWeight:800, cursor:'pointer',
-              boxShadow:'0 4px 20px rgba(229,57,53,0.4)' }}>
+            <button onClick={startGame} style={{flex:2,padding:'13px 0',borderRadius:12,border:'none',
+              background:`linear-gradient(135deg,${PC[0]},${PC[1]})`,
+              color:'#fff',fontSize:15,fontWeight:800,cursor:'pointer',fontFamily:'inherit',
+              boxShadow:'0 4px 20px rgba(229,57,53,0.4)'}}>
               ▶ Play Again
             </button>
           </div>
         )}
       </div>
 
-      {/* Victory overlay */}
-      {gameOver && (
-        <div style={{ position:'absolute', inset:0, background:'rgba(0,0,0,0.8)',
-          display:'flex', alignItems:'center', justifyContent:'center', zIndex:50 }}>
-          <div style={{
-            background:'linear-gradient(160deg,#1a1e30,#0f1220)',
-            borderRadius:24, padding:'28px 24px', textAlign:'center', width:280,
-            border:`2px solid ${PC[state.winner]}`,
-            boxShadow:`0 20px 60px ${PC[state.winner]}50`,
-            animation:'popIn 0.4s cubic-bezier(0.34,1.56,0.64,1)',
-          }}>
-            <div style={{ fontSize:56, marginBottom:8 }}>🏆</div>
-            <div style={{ fontSize:26, fontWeight:900, color:'#fff', marginBottom:4 }}>
-              {names[state.winner]} Wins!
-            </div>
-            <div style={{ fontSize:14, color:'rgba(255,255,255,0.4)', marginBottom:18 }}>
-              {PE[state.winner]} All tokens home!
-            </div>
-            <div style={{ display:'flex', gap:8 }}>
-              <button onClick={onExit} style={{ flex:1, padding:'12px 0', borderRadius:12,
-                border:'1px solid rgba(255,255,255,0.12)', background:'rgba(255,255,255,0.06)',
-                color:'rgba(255,255,255,0.7)', fontSize:14, fontWeight:700, cursor:'pointer' }}>
-                🏠 Home
-              </button>
-              <button onClick={startGame} style={{ flex:2, padding:'12px 0', borderRadius:12,
-                border:'none', background:`linear-gradient(135deg,${PC[state.winner]},${PC[state.winner]}cc)`,
-                color:'#fff', fontSize:15, fontWeight:800, cursor:'pointer' }}>
-                ▶ Play Again
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Victory */}
+      {gameOver && winner!==null && (
+        <VictoryModal
+          winner={winner} names={names} colors={PC}
+          onRestart={startGame} onExit={onExit}
+        />
       )}
 
       <style>{`
-        @keyframes glowPulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-        @keyframes slideDown { from{transform:translateY(-6px);opacity:0} to{transform:translateY(0);opacity:1} }
-        @keyframes popIn { from{transform:scale(0.7);opacity:0} to{transform:scale(1);opacity:1} }
-        @keyframes timerBar { from{width:100%} to{width:0%} }
-        @keyframes diceRoll { from{transform:rotate(-15deg)scale(0.85)} to{transform:rotate(15deg)scale(1.1)} }
+        @keyframes glowPulse{0%,100%{opacity:1}50%{opacity:0.35}}
+        @keyframes slideDown{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes popIn{from{transform:scale(0.7);opacity:0}to{transform:scale(1);opacity:1}}
       `}</style>
     </div>
   )

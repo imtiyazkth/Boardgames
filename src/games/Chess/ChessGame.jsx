@@ -394,7 +394,7 @@ export default function ChessGame({ mode='solo', difficulty='normal', playerName
         }}>♚</div>
         <div style={{flex:1}}>
           <div style={{color:currentPlayer==='b'&&!gameOver?'#90caf9':'rgba(255,255,255,0.5)',
-            fontWeight:700,fontSize:13}}>
+            fontWeight:700,fontSize:13,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
             {mode==='solo'?'🤖 ':''}{p2}
             {currentPlayer==='b'&&!gameOver&&<span style={{
               width:6,height:6,borderRadius:'50%',background:'#90caf9',
@@ -552,7 +552,7 @@ export default function ChessGame({ mode='solo', difficulty='normal', playerName
         }}>♔</div>
         <div style={{flex:1}}>
           <div style={{color:currentPlayer==='w'&&!gameOver?'#fff':'rgba(255,255,255,0.5)',
-            fontWeight:700,fontSize:13}}>
+            fontWeight:700,fontSize:13,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
             {p1}
             {currentPlayer==='w'&&!gameOver&&<span style={{
               width:6,height:6,borderRadius:'50%',background:'#fff',

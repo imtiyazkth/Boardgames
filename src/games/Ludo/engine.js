@@ -1,192 +1,321 @@
-import { BaseGameEngine, BaseAIEngine } from '../../core/GameEngine.js'
+// ─── Ludo King-spec Engine ────────────────────────────────────────────────────
+// 52-cell global track + step_count (0-56) as source of truth
+// Safe zones: 0,8,13,21,26,34,39,47
+// Entry indices: Red=0, Blue=13, Green=26, Yellow=39
 
-/**
- * Ludo Engine — supports 2–4 players.
- *
- * Each player has 4 tokens.
- * Token states: -1 = home base, 0–51 = main track, 52–56 = home column, 57 = finished.
- *
- * Track mapping per player (offset into 52-square main track):
- *   Red=0, Blue=13, Green=26, Yellow=39
- *
- * Safe squares on main track: 0,8,13,21,26,34,39,47
- */
+export const SAFE_ZONES = new Set([0,8,13,21,26,34,39,47])
+export const PLAYER_ENTRY  = [0,13,26,39]   // Red,Blue,Green,Yellow
+export const PLAYER_EXIT   = [50,11,24,37]  // step_count at which player turns into home path
+export const PLAYER_COLORS = ['red','blue','green','yellow']
 
-const PLAYER_START = [0, 13, 26, 39]    // Main track entry point per player
-const SAFE_SQUARES = new Set([0, 8, 13, 21, 26, 34, 39, 47])
-const PLAYER_COLORS = ['red', 'blue', 'green', 'yellow']
+// 52 global track cells [col,row] on 15×15 grid
+export const TRACK = [
+  [6,13],[6,12],[6,11],[6,10],[6,9],[6,8],  // 0-5
+  [5,8],[4,8],[3,8],[2,8],[1,8],[0,8],       // 6-11
+  [0,7],[0,6],                               // 12-13
+  [1,6],[2,6],[3,6],[4,6],[5,6],             // 14-18
+  [6,5],[6,4],[6,3],[6,2],[6,1],[6,0],       // 19-24
+  [7,0],[8,0],                               // 25-26
+  [8,1],[8,2],[8,3],[8,4],[8,5],             // 27-31
+  [9,6],[10,6],[11,6],[12,6],[13,6],[14,6],  // 32-37
+  [14,7],[14,8],                             // 38-39
+  [13,8],[12,8],[11,8],[10,8],[9,8],         // 40-44
+  [8,9],[8,10],[8,11],[8,12],[8,13],         // 45-49
+  [8,14],[7,14],                             // 50-51
+]
 
-export class LudoEngine extends BaseGameEngine {
-  initializeGame({ playerCount = 4, playerNames = [] } = {}) {
-    this.history = []
-    this.state = {
-      playerCount,
-      playerNames: Array.from({ length: playerCount }, (_, i) => playerNames[i] || `Player ${i + 1}`),
-      // tokens[p][t] = position: -1 home, 0-51 track, 52-56 home col, 57 finished
-      tokens: Array.from({ length: playerCount }, () => [-1, -1, -1, -1]),
-      currentPlayer: 0,
-      dice: null,
-      rolledSix: false,
-      mustRollAgain: false,
-      consecutiveSixes: 0,
-      winner: null,
-      gameOver: false,
-      moveCount: 0
-    }
-    return this.state
+// Home path per player (5 steps toward center)
+export const HOME_PATH = [
+  [[7,13],[7,12],[7,11],[7,10],[7,9]],   // Red
+  [[1,7],[2,7],[3,7],[4,7],[5,7]],        // Blue
+  [[7,1],[7,2],[7,3],[7,4],[7,5]],        // Green
+  [[13,7],[12,7],[11,7],[10,7],[9,7]],    // Yellow
+]
+
+// Yard slot positions per player
+export const YARD_SLOTS = [
+  [[2,11],[3,11],[2,12],[3,12]],    // Red   (bottom-left)
+  [[11,2],[12,2],[11,3],[12,3]],    // Blue  (top-right)
+  [[2,2],[3,2],[2,3],[3,3]],        // Green (top-left)
+  [[11,11],[12,11],[11,12],[12,12]],// Yellow(bottom-right)
+]
+
+export function getTokenCoord(player, stepCount, tokenSlot) {
+  if (stepCount < 0) {
+    const [c,r] = YARD_SLOTS[player][tokenSlot]
+    return { c, r }
+  }
+  if (stepCount === 57) return { c:7, r:7 }  // center goal
+  if (stepCount >= 52) {
+    const [c,r] = HOME_PATH[player][stepCount-52]
+    return { c, r }
+  }
+  const trackIdx = (PLAYER_ENTRY[player] + stepCount) % 52
+  const [c,r] = TRACK[trackIdx]
+  return { c, r }
+}
+
+export function getAbsoluteTrackPos(player, stepCount) {
+  if (stepCount < 0 || stepCount >= 52) return -1
+  return (PLAYER_ENTRY[player] + stepCount) % 52
+}
+
+// ─── Token state ──────────────────────────────────────────────────────────────
+function makeToken(player, slot) {
+  return { player, slot, stepCount: -1, status: 'BASE' }
+  // status: 'BASE' | 'TRACK' | 'HOME_PATH' | 'GOAL'
+}
+
+// ─── Main Engine ──────────────────────────────────────────────────────────────
+export class LudoEngine {
+  initializeGame({ playerCount=4, playerNames=[], humanPlayers=[0] }={}) {
+    this.playerCount   = playerCount
+    this.playerNames   = playerNames.length ? playerNames : ['Red','Blue','Green','Yellow'].slice(0,playerCount)
+    this.humanPlayers  = humanPlayers  // array of player indices that are human
+    this.tokens        = Array.from({length:playerCount}, (_, p) =>
+      [0,1,2,3].map(s => makeToken(p,s))
+    )
+    this.currentPlayer = 0
+    this.dice          = null
+    this.consecutiveSixes = 0
+    this.hasCaptured   = false
+    this.hasReachedGoal = false
+    this.rankings      = []  // players in finish order
+    this.gameOver      = false
+    this.winner        = null
+    this.event         = null
+    return this
   }
 
-  getLegalMoves() {
-    if (this.state.gameOver || this.state.dice === null) return [{ action: 'roll' }]
-    const { tokens, currentPlayer, dice } = this.state
-    const moves = []
-    const myTokens = tokens[currentPlayer]
-    const start = PLAYER_START[currentPlayer]
+  cloneState() {
+    return {
+      tokens:        this.tokens.map(pt => pt.map(t => ({...t}))),
+      currentPlayer: this.currentPlayer,
+      dice:          this.dice,
+      consecutiveSixes: this.consecutiveSixes,
+      hasCaptured:   this.hasCaptured,
+      hasReachedGoal: this.hasReachedGoal,
+      gameOver:      this.gameOver,
+      winner:        this.winner,
+      playerCount:   this.playerCount,
+      playerNames:   [...this.playerNames],
+      humanPlayers:  [...this.humanPlayers],
+      rankings:      [...this.rankings],
+      event:         this.event,
+    }
+  }
 
-    for (let t = 0; t < 4; t++) {
-      const pos = myTokens[t]
-      if (pos === 57) continue // already finished
+  rollDice() {
+    const val = Math.floor(Math.random()*6) + 1
+    this.dice = val
 
-      if (pos === -1) {
-        // Can only enter on 6
-        if (dice === 6) moves.push({ action: 'move', token: t, from: -1, to: start })
-      } else {
-        const newPos = this._computeNewPos(currentPlayer, pos, dice)
-        if (newPos !== null) moves.push({ action: 'move', token: t, from: pos, to: newPos })
+    if (val === 6) {
+      this.consecutiveSixes++
+      if (this.consecutiveSixes >= 3) {
+        this.consecutiveSixes = 0
+        this.dice = null
+        this.event = 'three_sixes'
+        this._nextTurn()
+        return { dice: val, event: 'three_sixes' }
       }
+    } else {
+      this.consecutiveSixes = 0
     }
 
-    // If no legal token moves, must pass
-    if (moves.length === 0) moves.push({ action: 'pass' })
+    // Check valid moves
+    const moves = this.getValidMoves()
+    if (moves.length === 0) {
+      this.event = 'no_moves'
+      // auto-pass after delay (caller handles)
+      return { dice: val, event: 'no_moves' }
+    }
+
+    // Auto-move if only 1 option
+    if (moves.length === 1) {
+      this.event = 'auto_move'
+      return { dice: val, event: 'auto_move', autoMove: moves[0] }
+    }
+
+    this.event = null
+    return { dice: val, event: null }
+  }
+
+  getValidMoves() {
+    if (this.dice === null) return []
+    const p = this.currentPlayer
+    const d = this.dice
+    const moves = []
+
+    this.tokens[p].forEach((tok, t) => {
+      if (tok.status === 'GOAL') return
+
+      if (tok.status === 'BASE') {
+        if (d === 6) moves.push({ player:p, token:t, action:'enter' })
+        return
+      }
+
+      const newStep = tok.stepCount + d
+      if (newStep > 57) return  // overflow
+
+      // HOME_PATH overflow check
+      if (tok.stepCount >= 52 && newStep > 57) return
+
+      moves.push({ player:p, token:t, action:'move', newStep })
+    })
+
     return moves
   }
 
-  applyMove({ action, token, from, to }) {
-    if (action === 'roll') {
-      if (this.state.dice !== null) return { success: false, error: 'Already rolled' }
-      const dice = Math.floor(Math.random() * 6) + 1
-      const consec = dice === 6 ? this.state.consecutiveSixes + 1 : 0
+  applyMove(move) {
+    const { player, token, action, newStep } = move
+    const tok = this.tokens[player][token]
+    let event = null
 
-      // 3 sixes in a row: forfeit turn
-      if (consec >= 3) {
-        this.state = { ...this.state, dice: null, consecutiveSixes: 0,
-          currentPlayer: (this.state.currentPlayer + 1) % this.state.playerCount }
-        return { success: true, newState: this.cloneState(), event: 'three_sixes' }
-      }
-      this.state = { ...this.state, dice, rolledSix: dice === 6, consecutiveSixes: consec }
-      return { success: true, newState: this.cloneState() }
-    }
+    if (action === 'enter') {
+      tok.stepCount = 0
+      tok.status = 'TRACK'
+      event = 'entered'
+    } else if (action === 'move') {
+      tok.stepCount = newStep
 
-    if (action === 'pass') {
-      this.state = { ...this.state, dice: null, currentPlayer: (this.state.currentPlayer + 1) % this.state.playerCount }
-      return { success: true, newState: this.cloneState() }
-    }
-
-    if (action === 'move') {
-      this.history.push(this.cloneState())
-      const tokens = this.state.tokens.map(row => [...row])
-      const p = this.state.currentPlayer
-      tokens[p][token] = to
-
-      let event = null
-      // Check capture (only on main track, not safe squares)
-      if (to >= 0 && to < 52 && !SAFE_SQUARES.has(to)) {
-        for (let op = 0; op < this.state.playerCount; op++) {
-          if (op === p) continue
-          for (let t2 = 0; t2 < 4; t2++) {
-            // Convert opponent position to absolute track
-            const opAbsPos = this._toAbsolute(op, tokens[op][t2])
-            const myAbsPos = this._toAbsolute(p, to)
-            if (opAbsPos !== null && myAbsPos !== null && opAbsPos === myAbsPos) {
-              tokens[op][t2] = -1 // send home
-              event = 'capture'
-            }
+      if (newStep === 57) {
+        tok.status = 'GOAL'
+        this.hasReachedGoal = true
+        event = 'goal'
+        // Check if player finished
+        const allGoal = this.tokens[player].every(t => t.status === 'GOAL')
+        if (allGoal) {
+          this.rankings.push(player)
+          if (this.rankings.length === 1) {
+            this.gameOver = true
+            this.winner = player
+          }
+        }
+      } else if (newStep >= 52) {
+        tok.status = 'HOME_PATH'
+      } else {
+        tok.status = 'TRACK'
+        // Collision check
+        const absPos = getAbsoluteTrackPos(player, newStep)
+        if (!SAFE_ZONES.has(absPos)) {
+          // Check other players
+          for (let p2=0; p2<this.playerCount; p2++) {
+            if (p2 === player) continue
+            this.tokens[p2].forEach(t2 => {
+              if (t2.status !== 'TRACK') return
+              const t2Abs = getAbsoluteTrackPos(p2, t2.stepCount)
+              if (t2Abs === absPos) {
+                // Blockade check (2 same-color tokens = blockade, cannot be captured)
+                const sameColorOnSq = this.tokens[p2].filter(x =>
+                  x.status==='TRACK' && getAbsoluteTrackPos(p2,x.stepCount)===absPos
+                ).length
+                if (sameColorOnSq <= 1) {
+                  t2.stepCount = -1
+                  t2.status = 'BASE'
+                  this.hasCaptured = true
+                  event = 'capture'
+                }
+              }
+            })
           }
         }
       }
-
-      // Check win
-      const allDone = tokens[p].every(t2 => t2 === 57)
-      const dice = this.state.rolledSix || event === 'capture' ? null : null
-      const nextPlayer = this.state.rolledSix || event === 'capture'
-        ? p : (p + 1) % this.state.playerCount
-      const rollAgain = this.state.rolledSix || event === 'capture'
-
-      this.state = {
-        ...this.state, tokens, dice: null, rolledSix: false,
-        mustRollAgain: rollAgain, consecutiveSixes: 0,
-        currentPlayer: allDone ? p : nextPlayer,
-        winner: allDone ? p : null, gameOver: allDone,
-        moveCount: this.state.moveCount + 1
-      }
-      return { success: true, newState: this.cloneState(), event }
     }
-    return { success: false, error: 'Unknown action' }
+
+    this.dice = null
+    this._evaluateTurn(event)
+    return { success:true, event }
   }
 
-  _computeNewPos(player, pos, dice) {
-    if (pos === -1) return dice === 6 ? PLAYER_START[player] : null
+  _evaluateTurn(event) {
+    const bonusRoll = this.dice===null && (
+      event==='capture' || event==='goal' || this.hasCaptured || this.hasReachedGoal ||
+      this.consecutiveSixes > 0
+    )
 
-    // Convert to relative position (steps from start)
-    const start = PLAYER_START[player]
-    const rel = ((pos - start) + 52) % 52
-    const newRel = rel + dice
-
-    if (newRel < 52) {
-      // Still on main track
-      return (start + newRel) % 52
-    } else if (newRel <= 56) {
-      // In home column (52–56)
-      return newRel
-    } else if (newRel === 57) {
-      return 57 // finished!
+    if (bonusRoll) {
+      // Player keeps turn
+      this.hasCaptured = false
+      this.hasReachedGoal = false
+    } else {
+      this._nextTurn()
     }
-    return null // overshoot
   }
 
-  _toAbsolute(player, pos) {
-    if (pos < 0 || pos >= 52) return null
-    return pos
+  _nextTurn() {
+    this.hasCaptured = false
+    this.hasReachedGoal = false
+    let next = (this.currentPlayer + 1) % this.playerCount
+    // Skip finished players
+    let guard = 0
+    while (this.rankings.includes(next) && guard < this.playerCount) {
+      next = (next + 1) % this.playerCount
+      guard++
+    }
+    this.currentPlayer = next
+    this.dice = null
   }
 
-  isGameOver() { return this.state.gameOver }
-  getResult() {
-    if (!this.state.gameOver) return { winner: null }
-    return { winner: this.state.winner, reason: `${this.state.playerNames[this.state.winner]} finished all tokens!` }
-  }
-  undoMove() {
-    if (!this.history.length) return { success: false }
-    this.state = this.history.pop()
-    return { success: true, newState: this.cloneState() }
+  autoPass() {
+    this.dice = null
+    this._nextTurn()
   }
 }
 
-export class LudoAI extends BaseAIEngine {
-  getBestMove(engine) {
-    const moves = engine.getLegalMoves().filter(m => m.action === 'move')
-    if (!moves.length) return engine.getLegalMoves()[0] || null
-
-    // Heuristic: prefer captures > finishing > advancing > entering
-    let best = null, bestScore = -Infinity
-    const p = engine.state.currentPlayer
-
-    for (const move of moves) {
-      let score = 0
-      if (move.to === 57) score += 1000        // finishing a token
-      else if (move.to >= 52) score += 200      // entering home column
-      else if (!SAFE_SQUARES.has(move.to)) score += this._captureValue(engine, p, move.to)
-      score += move.to >= 0 ? engine.state.dice : 0
-      if (score > bestScore) { bestScore = score; best = move }
-    }
-    return best
+// ─── AI Decision Engine ───────────────────────────────────────────────────────
+export class LudoAI {
+  constructor(profile='classic') {
+    this.profile = profile  // 'classic' | 'rush'
   }
 
-  _captureValue(engine, player, to) {
-    const { tokens, playerCount } = engine.state
-    for (let op = 0; op < playerCount; op++) {
-      if (op === player) continue
-      if (tokens[op].some(t => t === to)) return 500
+  getBestMove(engine) {
+    const moves = engine.getValidMoves()
+    if (!moves.length) return null
+    if (moves.length === 1) return moves[0]
+
+    if (this.profile === 'rush') return this._rushMove(moves, engine)
+    return this._classicMove(moves, engine)
+  }
+
+  _classicMove(moves, engine) {
+    // Priority: capture > enter > advance furthest > block
+    const captures = moves.filter(m => this._wouldCapture(m, engine))
+    if (captures.length) return captures[0]
+
+    const enters = moves.filter(m => m.action==='enter')
+    if (enters.length && engine.dice===6) return enters[0]
+
+    // Advance token closest to goal
+    const tracked = moves.filter(m => m.action==='move')
+    if (tracked.length) {
+      tracked.sort((a,b) => {
+        const ta = engine.tokens[a.player][a.token].stepCount
+        const tb = engine.tokens[b.player][b.token].stepCount
+        return tb - ta  // furthest ahead first
+      })
+      return tracked[0]
     }
-    return 0
+    return moves[0]
+  }
+
+  _rushMove(moves, engine) {
+    const captures = moves.filter(m => this._wouldCapture(m, engine))
+    if (captures.length) return captures[0]
+    // Most aggressive: move token closest to any enemy
+    return moves[Math.floor(Math.random() * moves.length)]
+  }
+
+  _wouldCapture(move, engine) {
+    if (move.action !== 'move' || !move.newStep) return false
+    const absPos = getAbsoluteTrackPos(move.player, move.newStep)
+    if (SAFE_ZONES.has(absPos)) return false
+    for (let p2=0; p2<engine.playerCount; p2++) {
+      if (p2===move.player) continue
+      for (const t2 of engine.tokens[p2]) {
+        if (t2.status!=='TRACK') continue
+        if (getAbsoluteTrackPos(p2,t2.stepCount)===absPos) return true
+      }
+    }
+    return false
   }
 }
