@@ -3,278 +3,350 @@ import { LudoEngine, LudoAI, SAFE_ZONES, TRACK, HOME_PATH,
          YARD_SLOTS, getTokenCoord, PLAYER_ENTRY } from './engine.js'
 import { useAudio } from '../../hooks/useAudio.js'
 
-// ── Colors exactly matching Ludo King ────────────────────────────────────────
-const PC  = ['#e53935','#2196f3','#4caf50','#ffb300']  // Red Blue Green Yellow
-const PCL = ['#ffcdd2','#bbdefb','#c8e6c9','#fff9c4']  // Light versions
-const PN  = ['Red','Blue','Green','Yellow']
-const G   = 15  // 15x15 grid
+/**
+ * Ludo King exact replica:
+ * - Red: top-left (row 1-9, col 1-6)
+ * - Green: top-right (row 1-9, col 10-15)
+ * - Blue: bottom-left (row 10-15, col 1-6)  [actually bottom-left in LK = You]
+ * - Yellow: bottom-right (row 10-15, col 10-15)
+ *
+ * From screenshot: top-left=Red(Computer1), top-right=Green(Computer2),
+ *                  bottom-left=Blue(You), bottom-right=Yellow(Computer3)
+ *
+ * Token: concentric circle design (not pin)
+ * Track arrows: colored strips with arrows
+ */
 
-const DICE_FACE = ['','⚀','⚁','⚂','⚃','⚄','⚅']
+// ── Ludo King exact colors ──────────────────────────────────────────────────
+const LUDO = {
+  red:    { bg:'#e53935', mid:'#ef5350', light:'#ffcdd2', dark:'#b71c1c' },
+  green:  { bg:'#43a047', mid:'#66bb6a', light:'#c8e6c9', dark:'#1b5e20' },
+  blue:   { bg:'#1e88e5', mid:'#42a5f5', light:'#bbdefb', dark:'#0d47a1' },
+  yellow: { bg:'#ffb300', mid:'#ffd54f', light:'#fff9c4', dark:'#ff6f00' },
+}
+
+// Player order: 0=Red(top-left), 1=Green(top-right), 2=Blue(bottom-left), 3=Yellow(bottom-right)
+const PC   = [LUDO.red.bg,   LUDO.green.bg,  LUDO.blue.bg,   LUDO.yellow.bg  ]
+const PCM  = [LUDO.red.mid,  LUDO.green.mid, LUDO.blue.mid,  LUDO.yellow.mid ]
+const PCL  = [LUDO.red.light,LUDO.green.light,LUDO.blue.light,LUDO.yellow.light]
+const PCD  = [LUDO.red.dark, LUDO.green.dark,LUDO.blue.dark, LUDO.yellow.dark ]
+const PN   = ['Red','Green','Blue','Yellow']
+const G    = 15
+
+const DICE_DOTS = {
+  1: [[50,50]],
+  2: [[25,25],[75,75]],
+  3: [[25,25],[50,50],[75,75]],
+  4: [[25,25],[75,25],[25,75],[75,75]],
+  5: [[25,25],[75,25],[50,50],[25,75],[75,75]],
+  6: [[25,20],[75,20],[25,50],[75,50],[25,80],[75,80]],
+}
 
 function delay(ms){ return new Promise(r=>setTimeout(r,ms)) }
 
-// ── Ludo King-style SVG board ────────────────────────────────────────────────
-function LudoBoard({ state, legalTokens, onTokenClick, cellSize=38 }) {
-  if (!state) return null
-  const S = G * cellSize
+// ── Token: Ludo King concentric circle style ─────────────────────────────────
+function LudoToken({ cx, cy, r, color, colorMid, colorLight, colorDark,
+                     selectable, idx, total }) {
+  const scale = selectable ? 1.15 : 1
+  return (
+    <g style={{cursor:selectable?'pointer':'default'}}
+      transform={`translate(${cx},${cy}) scale(${scale})`}>
+      {/* Outer shadow ring */}
+      <circle r={r} fill="rgba(0,0,0,0.25)" transform="translate(1,2)"/>
+      {/* Outer colored ring */}
+      <circle r={r} fill={colorDark}/>
+      {/* Mid ring */}
+      <circle r={r*0.82} fill={color}/>
+      {/* White ring */}
+      <circle r={r*0.65} fill="rgba(255,255,255,0.9)"/>
+      {/* Inner colored circle */}
+      <circle r={r*0.48} fill={colorMid}/>
+      {/* Inner shine */}
+      <circle r={r*0.22} cx={-r*0.15} cy={-r*0.15}
+        fill="rgba(255,255,255,0.55)"/>
+      {/* Pulse ring when selectable */}
+      {selectable && (
+        <circle r={r*1.35} fill="none" stroke={color}
+          strokeWidth={2} opacity={0.6}
+          style={{animation:'lkPulse 0.7s ease-in-out infinite'}}/>
+      )}
+    </g>
+  )
+}
 
-  // Track which squares have tokens: key=`${c},${r}` → [{p,t}]
+// ── Dice SVG (Ludo King style - white with dots) ─────────────────────────────
+function DiceFace({ value, size=54 }) {
+  const dots = DICE_DOTS[value] || []
+  return (
+    <svg viewBox="0 0 100 100" width={size} height={size}>
+      {/* White rounded square */}
+      <rect x={4} y={4} width={92} height={92} rx={18}
+        fill="#fff" stroke="rgba(0,0,0,0.15)" strokeWidth={2}/>
+      {/* Inner shadow */}
+      <rect x={4} y={4} width={92} height={92} rx={18}
+        fill="none" stroke="rgba(0,0,0,0.08)" strokeWidth={6}/>
+      {dots.map(([dx,dy],i)=>(
+        <circle key={i} cx={dx} cy={dy} r={9} fill="#1a1a2e"/>
+      ))}
+      {/* Red pip on 1 */}
+      {value===1 && <circle cx={50} cy={50} r={9} fill="#e53935"/>}
+    </svg>
+  )
+}
+
+// ── Full Ludo King Board ─────────────────────────────────────────────────────
+function LudoKingBoard({ state, legalTokens, onTokenClick }) {
+  if (!state) return null
+
+  const CS = 32  // cell size in px for SVG
+  const S  = G * CS
+
+  // Build token position map
   const tokenMap = {}
   state.tokens.forEach((playerTokens, p) => {
     playerTokens.forEach((tok, t) => {
       const coord = getTokenCoord(p, tok.stepCount, t)
       const key = `${coord.c},${coord.r}`
       if (!tokenMap[key]) tokenMap[key] = []
-      tokenMap[key].push({ p, t, tok })
+      tokenMap[key].push({ p, t, tok, stepCount: tok.stepCount })
     })
   })
 
+  // Yard 4-slot positions (fixed 2x2 inside each colored quadrant)
+  // Player 0 (Red):    top-left quadrant    (cols 0-5, rows 0-8) - inner box rows 1-7 cols 0.8-5.2
+  // Player 1 (Green):  top-right quadrant   (cols 9-14, rows 0-8)
+  // Player 2 (Blue):   bottom-left quadrant (cols 0-5, rows 9-14)
+  // Player 3 (Yellow): bottom-right quadrant(cols 9-14, rows 9-14)
+  const YARD_POS = [
+    // Red (top-left): tokens at grid positions inside 6x9 quadrant
+    [[1.5,1.5],[3.5,1.5],[1.5,3.5],[3.5,3.5]],
+    // Green (top-right)
+    [[9.5,1.5],[11.5,1.5],[9.5,3.5],[11.5,3.5]],
+    // Blue (bottom-left)
+    [[1.5,10.5],[3.5,10.5],[1.5,12.5],[3.5,12.5]],
+    // Yellow (bottom-right)
+    [[9.5,10.5],[11.5,10.5],[9.5,12.5],[11.5,12.5]],
+  ]
+
   return (
     <svg viewBox={`0 0 ${S} ${S}`} width="100%"
-      style={{ display:'block', maxWidth:420 }}>
+      style={{display:'block',maxWidth:440}}>
 
-      {/* Board base */}
-      <rect width={S} height={S} fill="#f5f5f5" rx={6}/>
+      {/* ── Base board ── */}
+      <rect width={S} height={S} fill="#f0f0f0" rx={6}/>
 
-      {/* 4 colored home yard quadrants */}
-      {[
-        // Red — bottom-left
-        { x:0,      y:9*cellSize, w:6*cellSize, h:6*cellSize, c:PC[0], p:0 },
-        // Blue — top-right  
-        { x:9*cellSize, y:0,      w:6*cellSize, h:6*cellSize, c:PC[1], p:1 },
-        // Green — top-left
-        { x:0,      y:0,          w:6*cellSize, h:6*cellSize, c:PC[2], p:2 },
-        // Yellow — bottom-right
-        { x:9*cellSize, y:9*cellSize, w:6*cellSize, h:6*cellSize, c:PC[3], p:3 },
-      ].map(({x,y,w,h,c,p})=>(
-        <g key={p}>
-          {/* Outer colored square */}
-          <rect x={x} y={y} width={w} height={h} fill={c} rx={4}/>
-          {/* Inner white box */}
-          <rect x={x+cellSize*0.4} y={y+cellSize*0.4}
-            width={w-cellSize*0.8} height={h-cellSize*0.8}
-            fill="rgba(255,255,255,0.85)" rx={3}/>
-          {/* Player label */}
-          <text x={x+w/2} y={y+h-cellSize*0.25} textAnchor="middle"
-            fontSize={cellSize*0.38} fontWeight="800" fill={c} opacity={0.7}>
-            {PN[p].toUpperCase()}
-          </text>
-        </g>
-      ))}
+      {/* ── 4 Large colored quadrants ── */}
+      {/* Red - top-left: rows 0-8, cols 0-5 */}
+      <rect x={0}    y={0}    width={6*CS} height={9*CS} fill={PC[0]} rx={0}/>
+      {/* Green - top-right: rows 0-8, cols 9-14 */}
+      <rect x={9*CS} y={0}    width={6*CS} height={9*CS} fill={PC[1]} rx={0}/>
+      {/* Blue - bottom-left: rows 9-14, cols 0-5 */}
+      <rect x={0}    y={9*CS} width={6*CS} height={6*CS} fill={PC[2]} rx={0}/>
+      {/* Yellow - bottom-right: rows 9-14, cols 9-14 */}
+      <rect x={9*CS} y={9*CS} width={6*CS} height={6*CS} fill={PC[3]} rx={0}/>
 
-      {/* Colored home-path strips (center columns) */}
-      {/* Green strip (top center) */}
-      <rect x={6*cellSize} y={0} width={3*cellSize} height={6*cellSize}
-        fill={`${PC[2]}30`}/>
-      {/* Blue strip (right center) */}
-      <rect x={9*cellSize} y={6*cellSize} width={6*cellSize} height={3*cellSize}
-        fill={`${PC[1]}30`}/>
-      {/* Red strip (bottom center) */}
-      <rect x={6*cellSize} y={9*cellSize} width={3*cellSize} height={6*cellSize}
-        fill={`${PC[0]}30`}/>
-      {/* Yellow strip (left center) */}
-      <rect x={0} y={6*cellSize} width={6*cellSize} height={3*cellSize}
-        fill={`${PC[3]}30`}/>
+      {/* ── Inner white yards ── */}
+      {/* Red inner */}
+      <rect x={CS*0.6} y={CS*0.6} width={4.8*CS} height={7.8*CS}
+        fill="rgba(255,255,255,0.85)" rx={4}/>
+      {/* Green inner */}
+      <rect x={9.6*CS} y={CS*0.6} width={4.8*CS} height={7.8*CS}
+        fill="rgba(255,255,255,0.85)" rx={4}/>
+      {/* Blue inner */}
+      <rect x={CS*0.6} y={9.6*CS} width={4.8*CS} height={4.8*CS}
+        fill="rgba(255,255,255,0.85)" rx={4}/>
+      {/* Yellow inner */}
+      <rect x={9.6*CS} y={9.6*CS} width={4.8*CS} height={4.8*CS}
+        fill="rgba(255,255,255,0.85)" rx={4}/>
 
-      {/* Grid cells */}
+      {/* ── Colored home-path strips ── */}
+      {/* Red home strip (bottom center col 7, rows 9-14) */}
+      <rect x={6*CS} y={9*CS} width={3*CS} height={6*CS} fill={PCL[0]}/>
+      {/* Red arrow strip rows 9-14 center col */}
+      <polygon points={`${7.5*CS},${9.2*CS} ${8.8*CS},${12*CS} ${7.5*CS},${14.5*CS} ${6.2*CS},${12*CS}`}
+        fill={PC[0]} opacity={0.7}/>
+
+      {/* Green home strip (top center col 7, rows 0-6) */}
+      <rect x={6*CS} y={0} width={3*CS} height={6*CS} fill={PCL[1]}/>
+      <polygon points={`${7.5*CS},${0.5*CS} ${8.8*CS},${3*CS} ${7.5*CS},${5.5*CS} ${6.2*CS},${3*CS}`}
+        fill={PC[1]} opacity={0.7}/>
+
+      {/* Blue home strip (left center row 7, cols 0-6) */}
+      <rect x={0} y={6*CS} width={6*CS} height={3*CS} fill={PCL[2]}/>
+      <polygon points={`${0.5*CS},${7.5*CS} ${3*CS},${6.2*CS} ${5.5*CS},${7.5*CS} ${3*CS},${8.8*CS}`}
+        fill={PC[2]} opacity={0.7}/>
+
+      {/* Yellow home strip (right center row 7, cols 9-15) */}
+      <rect x={9*CS} y={6*CS} width={6*CS} height={3*CS} fill={PCL[3]}/>
+      <polygon points={`${14.5*CS},${7.5*CS} ${12*CS},${6.2*CS} ${9.5*CS},${7.5*CS} ${12*CS},${8.8*CS}`}
+        fill={PC[3]} opacity={0.7}/>
+
+      {/* ── Track cells (white grid on track) ── */}
       {Array.from({length:G},(_,r)=>Array.from({length:G},(_,c)=>{
-        const inYard=(c<6&&r<6)||(c>8&&r<6)||(c<6&&r>8)||(c>8&&r>8)
-        const isCenter=c>=6&&c<=8&&r>=6&&r<=8
-        if(inYard||isCenter) return null
-        const trackIdx=TRACK.findIndex(([tc,tr])=>tc===c&&tr===r)
-        const isSafe=trackIdx>=0&&SAFE_ZONES.has(trackIdx)
-        const isStart=[0,6,8,14].some(p=>{
-          const ep=PLAYER_ENTRY[p]||0
-          return trackIdx===ep
-        })
+        const inQuad = (c<6&&r<9)||(c>8&&r<9)||(c<6&&r>8)||(c>8&&r>8)
+        const isCenter = c>=6&&c<=8&&r>=6&&r<=8
+        if (inQuad || isCenter) return null
+        const trackIdx = TRACK.findIndex(([tc,tr])=>tc===c&&tr===r)
+        const isSafe = trackIdx>=0 && SAFE_ZONES.has(trackIdx)
         return (
-          <rect key={`${r}${c}`}
-            x={c*cellSize} y={r*cellSize}
-            width={cellSize} height={cellSize}
-            fill={isSafe?'rgba(255,255,255,0.8)':'rgba(255,255,255,0.15)'}
-            stroke="rgba(0,0,0,0.08)" strokeWidth={0.5}/>
+          <rect key={`${r}-${c}`}
+            x={c*CS} y={r*CS} width={CS} height={CS}
+            fill={isSafe?'rgba(255,255,255,0.95)':'rgba(255,255,255,0.7)'}
+            stroke="rgba(0,0,0,0.1)" strokeWidth={0.5}/>
         )
       }))}
 
-      {/* Star markers on safe zones */}
+      {/* ── Safe zone star markers ── */}
       {[...SAFE_ZONES].filter(s=>s<52).map(s=>{
         const [c,r]=TRACK[s]
-        return <text key={s} x={c*cellSize+cellSize/2} y={r*cellSize+cellSize*0.7}
-          textAnchor="middle" fontSize={cellSize*0.55} opacity={0.5}>☆</text>
+        return <text key={s} x={(c+0.5)*CS} y={(r+0.5)*CS+5}
+          textAnchor="middle" fontSize={CS*0.55} opacity={0.4}>☆</text>
       })}
 
-      {/* Arrow markers at player start positions */}
-      {[
-        {p:0, x:7*cellSize, y:13*cellSize, t:'↑'},
-        {p:1, x:1*cellSize, y:7*cellSize,  t:'→'},
-        {p:2, x:7*cellSize, y:1*cellSize,  t:'↓'},
-        {p:3, x:13*cellSize,y:7*cellSize,  t:'←'},
-      ].map(({p,x,y,t})=>(
-        <text key={p} x={x+cellSize/2} y={y+cellSize*0.72}
-          textAnchor="middle" fontSize={cellSize*0.6}
-          fill={PC[p]} fontWeight="900" opacity={0.8}>{t}</text>
-      ))}
+      {/* ── Direction arrows on track entry ── */}
+      {/* Green entry arrow (col 7, row 1 - points down) */}
+      <text x={7.5*CS} y={1.7*CS} textAnchor="middle" fontSize={CS*0.65}
+        fill={PC[1]} fontWeight="900">↓</text>
+      {/* Red entry arrow (col 7, row 13 - points up) */}
+      <text x={7.5*CS} y={13.7*CS} textAnchor="middle" fontSize={CS*0.65}
+        fill={PC[0]} fontWeight="900">↑</text>
+      {/* Blue entry arrow (col 1, row 7 - points right) */}
+      <text x={1.5*CS} y={7.7*CS} textAnchor="middle" fontSize={CS*0.65}
+        fill={PC[2]} fontWeight="900">→</text>
+      {/* Yellow entry arrow (col 13, row 7 - points left) */}
+      <text x={13.5*CS} y={7.7*CS} textAnchor="middle" fontSize={CS*0.65}
+        fill={PC[3]} fontWeight="900">←</text>
 
-      {/* Center star diamond */}
+      {/* ── Center star diamond ── */}
       <polygon
-        points={`${7.5*cellSize},${6.3*cellSize} ${8.7*cellSize},${7.5*cellSize} ${7.5*cellSize},${8.7*cellSize} ${6.3*cellSize},${7.5*cellSize}`}
-        fill="#ffd700" stroke="rgba(0,0,0,0.2)" strokeWidth={1}/>
-      <text x={7.5*cellSize} y={7.5*cellSize+5} textAnchor="middle"
-        fontSize={cellSize*0.7} fontWeight="bold" fill="#fff">★</text>
+        points={`${7.5*CS},${6.1*CS} ${8.9*CS},${7.5*CS} ${7.5*CS},${8.9*CS} ${6.1*CS},${7.5*CS}`}
+        fill="#ffd700" stroke="rgba(0,0,0,0.15)" strokeWidth={1}/>
+      <text x={7.5*CS} y={7.5*CS+6} textAnchor="middle"
+        fontSize={CS*0.75} fill="white" fontWeight="bold">★</text>
 
-      {/* Tokens — rendered over everything */}
+      {/* ── Yard tokens (BASE status) ── */}
+      {state.tokens.map((playerTokens, p) =>
+        playerTokens.map((tok, t) => {
+          if (tok.status !== 'BASE') return null
+          const [gx, gy] = YARD_POS[p][t]
+          const isLegal = legalTokens.some(l=>l.p===p&&l.t===t)
+          return (
+            <g key={`yard-${p}-${t}`}
+              onClick={()=>isLegal&&onTokenClick(p,t)}>
+              <LudoToken
+                cx={gx*CS} cy={gy*CS} r={CS*0.36}
+                color={PC[p]} colorMid={PCM[p]}
+                colorLight={PCL[p]} colorDark={PCD[p]}
+                selectable={isLegal}
+              />
+            </g>
+          )
+        })
+      )}
+
+      {/* ── Track/HomePath tokens ── */}
       {Object.entries(tokenMap).map(([key,tokens])=>{
         const [c,r]=key.split(',').map(Number)
-        const cx=(c+0.5)*cellSize, cy=(r+0.5)*cellSize
+        if (c<0||c>14||r<0||r>14) return null
+        // Skip yard coords (handled above)
+        const isYardCoord = tokens.every(({tok})=>tok.status==='BASE')
+        if (isYardCoord) return null
+
+        const cx=(c+0.5)*CS, cy=(r+0.5)*CS
         const count=tokens.length
+        const baseR = count>1 ? CS*0.27 : CS*0.35
 
         return tokens.map(({p,t,tok},idx)=>{
           const isLegal=legalTokens.some(l=>l.p===p&&l.t===t)
-          const r2=count>1?cellSize*0.21:cellSize*0.3
-
-          // Offset for stacking multiple tokens
+          // Offset for stacking
           let ox=0,oy=0
-          if(count===2){ox=(idx===0?-1:1)*cellSize*0.16}
+          if(count===2){ox=(idx===0?-1:1)*CS*0.22}
           if(count===3){
             const ang=(idx/3)*Math.PI*2-Math.PI/2
-            ox=Math.cos(ang)*cellSize*0.17;oy=Math.sin(ang)*cellSize*0.17
+            ox=Math.cos(ang)*CS*0.2;oy=Math.sin(ang)*CS*0.2
           }
           if(count>=4){
-            ox=((idx%2)*2-1)*cellSize*0.14
-            oy=((Math.floor(idx/2)*2)-1)*cellSize*0.14
+            ox=((idx%2)*2-1)*CS*0.18
+            oy=(idx<2?-1:1)*CS*0.18
           }
-
           return (
             <g key={`${p}-${t}`}
-              onClick={()=>isLegal&&onTokenClick(p,t)}
-              style={{cursor:isLegal?'pointer':'default'}}>
-              {/* Pulse ring for selectable */}
-              {isLegal&&(
-                <circle cx={cx+ox} cy={cy+oy} r={r2*1.7}
-                  fill="none" stroke={PC[p]} strokeWidth={2} opacity={0.55}
-                  style={{animation:'ludoPulse 0.8s ease-in-out infinite'}}/>
-              )}
-              {/* Drop shadow */}
-              <ellipse cx={cx+ox+1} cy={cy+oy+r2*0.6} rx={r2*0.8} ry={r2*0.35}
-                fill="rgba(0,0,0,0.25)"/>
-              {/* Pin body — Ludo King style teardrop */}
-              <path d={`M${cx+ox},${cy+oy+r2*0.8}
-                C${cx+ox-r2*1.1},${cy+oy-r2*0.3}
-                ${cx+ox-r2*1.1},${cy+oy-r2*1.6}
-                ${cx+ox},${cy+oy-r2*1.6}
-                C${cx+ox+r2*1.1},${cy+oy-r2*1.6}
-                ${cx+ox+r2*1.1},${cy+oy-r2*0.3}
-                ${cx+ox},${cy+oy+r2*0.8}Z`}
-                fill={PC[p]} stroke="rgba(255,255,255,0.4)" strokeWidth={1}/>
-              {/* Inner circle */}
-              <circle cx={cx+ox} cy={cy+oy-r2*0.6} r={r2*0.55}
-                fill={PCL[p]} opacity={0.9}/>
-              {/* Shine */}
-              <circle cx={cx+ox-r2*0.2} cy={cy+oy-r2*0.85} r={r2*0.2}
-                fill="rgba(255,255,255,0.6)"/>
-              {/* Bounce animation for selectable */}
-              {isLegal&&(
-                <animateTransform attributeName="transform" type="translate"
-                  values="0,0;0,-3;0,0" dur="0.6s" repeatCount="indefinite"
-                  additive="sum"/>
-              )}
+              onClick={()=>isLegal&&onTokenClick(p,t)}>
+              <LudoToken
+                cx={cx+ox} cy={cy+oy} r={baseR}
+                color={PC[p]} colorMid={PCM[p]}
+                colorLight={PCL[p]} colorDark={PCD[p]}
+                selectable={isLegal}
+              />
             </g>
           )
         })
       })}
 
       <style>{`
-        @keyframes ludoPulse{
-          0%,100%{stroke-opacity:0.6;r:${cellSize*0.3*1.7}px}
-          50%{stroke-opacity:0.2;r:${cellSize*0.3*2.1}px}
+        @keyframes lkPulse{
+          0%,100%{opacity:0.7;transform:scale(1)}
+          50%{opacity:0.3;transform:scale(1.15)}
         }
       `}</style>
     </svg>
   )
 }
 
-// ── Player Panel (top/bottom style like Ludo King) ──────────────────────────
-function PlayerPanel({ name, color, light, isActive, isAI, tokensDone, score, small }) {
+// ── Player info box (top/bottom like Ludo King) ──────────────────────────────
+function PlayerBox({ p, name, isActive, isAI, tokensDone, color, light, dark, side }) {
   return (
     <div style={{
-      flex:1,minWidth:0,padding:small?'5px 7px':'7px 10px',
-      borderRadius:12,transition:'all 0.25s',
-      background:isActive?`${color}25`:'rgba(255,255,255,0.05)',
-      border:`2px solid ${isActive?color:'rgba(255,255,255,0.1)'}`,
-      boxShadow:isActive?`0 0 20px ${color}40`:'none',
-      position:'relative',overflow:'hidden',
+      display:'flex',alignItems:'center',gap:6,
+      padding:'6px 8px',borderRadius:10,
+      background:isActive?`${color}30`:'rgba(255,255,255,0.06)',
+      border:`2px solid ${isActive?color:'rgba(255,255,255,0.12)'}`,
+      boxShadow:isActive?`0 0 18px ${color}50`:'none',
+      transition:'all 0.2s',flex:1,minWidth:0,
     }}>
-      {isActive&&<div style={{
-        position:'absolute',top:0,left:0,right:0,height:3,
-        background:`linear-gradient(90deg,${color},${color}60)`,
-      }}/>}
-      <div style={{display:'flex',alignItems:'center',gap:5}}>
-        <div style={{
-          width:18,height:18,borderRadius:'50%',background:color,
-          flexShrink:0,border:'1.5px solid rgba(255,255,255,0.3)',
-          boxShadow:isActive?`0 0 8px ${color}`:'none',
-          display:'flex',alignItems:'center',justifyContent:'center',
-          fontSize:8,
-        }}>{isAI?'🤖':''}</div>
+      {/* Token icon */}
+      <svg width={24} height={24} viewBox="0 0 100 100">
+        <circle r={45} cx={50} cy={50} fill={dark}/>
+        <circle r={37} cx={50} cy={50} fill={color}/>
+        <circle r={28} cx={50} cy={50} fill="rgba(255,255,255,0.9)"/>
+        <circle r={20} cx={50} cy={50} fill={color}/>
+        <circle cx={42} cy={42} r={8} fill="rgba(255,255,255,0.5)"/>
+      </svg>
+      <div style={{flex:1,minWidth:0}}>
         <div style={{
           color:isActive?'#fff':'rgba(255,255,255,0.5)',
-          fontSize:small?9:11,fontWeight:700,
-          overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1,
-        }}>{name}</div>
-        {isActive&&<div style={{
-          width:6,height:6,borderRadius:'50%',background:color,
-          animation:'ludoGlow 0.9s ease-in-out infinite',flexShrink:0,
-        }}/>}
+          fontWeight:700,fontSize:11,
+          overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
+        }}>{isAI?'🤖 ':''}{name}</div>
+        {/* Token progress */}
+        <div style={{display:'flex',gap:2,marginTop:2}}>
+          {[0,1,2,3].map(i=>(
+            <div key={i} style={{
+              width:6,height:6,borderRadius:'50%',
+              background:i<tokensDone?color:'rgba(255,255,255,0.15)',
+              boxShadow:i<tokensDone?`0 0 4px ${color}`:'none',
+            }}/>
+          ))}
+        </div>
       </div>
-      <div style={{display:'flex',gap:3,marginTop:3}}>
-        {[0,1,2,3].map(i=>(
-          <div key={i} style={{
-            width:8,height:8,borderRadius:'50%',
-            background:i<tokensDone?color:'rgba(255,255,255,0.12)',
-            boxShadow:i<tokensDone?`0 0 5px ${color}`:'none',
-            transition:'all 0.3s',
-          }}/>
-        ))}
-      </div>
+      {isActive&&<div style={{
+        width:7,height:7,borderRadius:'50%',background:color,
+        animation:'lkGlow 0.8s ease-in-out infinite',flexShrink:0,
+      }}/>}
     </div>
   )
 }
 
-// ── Dice Component (Ludo King style) ────────────────────────────────────────
-function LudoDice({ value, rolling, canRoll, onRoll, color }) {
-  return (
-    <button onClick={onRoll} disabled={!canRoll||rolling}
-      style={{
-        width:64,height:64,borderRadius:16,flexShrink:0,
-        background:canRoll?'#fff':'rgba(255,255,255,0.1)',
-        border:`3px solid ${canRoll?color:'rgba(255,255,255,0.15)'}`,
-        fontSize:38,cursor:canRoll?'pointer':'default',
-        display:'flex',alignItems:'center',justifyContent:'center',
-        boxShadow:canRoll?`0 6px 24px ${color}70,0 2px 8px rgba(0,0,0,0.4)`:'none',
-        transform:rolling?'rotate(20deg) scale(0.88)':canRoll?'scale(1.05)':'scale(1)',
-        transition:'all 0.15s',
-        animation:canRoll&&!rolling?'diceWiggle 2s ease-in-out infinite':'none',
-      }}>
-      {value?DICE_FACE[value]:'🎲'}
-      <style>{`
-        @keyframes diceWiggle{
-          0%,100%{transform:scale(1.05) rotate(0deg)}
-          25%{transform:scale(1.07) rotate(-5deg)}
-          75%{transform:scale(1.07) rotate(5deg)}
-        }
-      `}</style>
-    </button>
-  )
-}
-
-// ── Main Ludo Game ──────────────────────────────────────────────────────────
+// ── Main Ludo Game ────────────────────────────────────────────────────────────
 export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], onExit, onGameOver }) {
   const { play, vibrate } = useAudio()
   const pc = Math.min(4, Math.max(2, playerCount||4))
 
   const humanPlayers = mode==='local2p'?[0,1]:mode==='local3p'?[0,1,2]:mode==='local4p'?[0,1,2,3]:[0]
   const names = Array.from({length:pc},(_,i)=>
-    playerNames[i] || (humanPlayers.includes(i)?`Player ${i+1}`:PN[i])
+    playerNames[i] || (humanPlayers.includes(i)
+      ? (i===0&&mode==='solo'?'You':`Player ${i+1}`)
+      : `Computer ${i}`)
   )
 
   const [engine]  = useState(()=>new LudoEngine())
@@ -289,73 +361,79 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
 
   const isHuman = useCallback(p=>humanPlayers.includes(p),[humanPlayers])
 
-  function showMsg(text,color='#ffd700',ms=2000) {
-    setMsg(text); setMsgClr(color)
+  function showMsg(text,color='#ffd700',ms=2000){
+    setMsg(text);setMsgClr(color)
     setTimeout(()=>setMsg(''),ms)
   }
 
-  function startGame() {
+  function startGame(){
     engine.initializeGame({playerCount:pc,playerNames:names,humanPlayers})
     setState(engine.cloneState())
     setDiceVal(null);setLegal([]);setMsg('')
-    aiBusy.current=false; setRolling(false)
+    aiBusy.current=false;setRolling(false)
     play('game_start')
   }
 
   useEffect(()=>{startGame()},[])
 
   useEffect(()=>{
-    if (!state||state.dice===null||state.gameOver){setLegal([]);return}
+    if(!state||state.dice===null||state.gameOver){setLegal([]);return}
     const moves=engine.getValidMoves()
     setLegal(moves.map(m=>({p:m.player,t:m.token})))
   },[state])
 
   // AI auto-play
   useEffect(()=>{
-    if (!state||state.gameOver||aiBusy.current) return
+    if(!state||state.gameOver||aiBusy.current) return
     const p=state.currentPlayer
-    if (isHuman(p)) return
+    if(isHuman(p)) return
     aiBusy.current=true
-    if (state.dice===null) {
-      setTimeout(()=>{doRoll();aiBusy.current=false},700)
+    if(state.dice===null){
+      setTimeout(()=>{doRoll();aiBusy.current=false},800)
     } else {
       setTimeout(()=>{
         const move=ai.getBestMove(engine)
         if(move) doApplyMove(move)
-        else {engine.autoPass();setState(engine.cloneState());setDiceVal(null)}
+        else{engine.autoPass();setState(engine.cloneState());setDiceVal(null)}
         aiBusy.current=false
-      },800)
+      },900)
     }
   },[state])
 
-  async function doRoll() {
-    if (!state||state.dice!==null||rolling) return
+  async function doRoll(){
+    if(!state||state.dice!==null||rolling) return
     setRolling(true)
-    play('ludo_dice'); vibrate([12])
-    for(let i=0;i<8;i++){setDiceVal(Math.ceil(Math.random()*6));await delay(70)}
+    play('ludo_dice');vibrate([15])
+    // Dice roll animation
+    for(let i=0;i<8;i++){
+      setDiceVal(Math.ceil(Math.random()*6))
+      await delay(65)
+    }
     setRolling(false)
+
     const res=engine.rollDice()
     setDiceVal(res.dice)
     const ns=engine.cloneState()
     setState(ns)
+
     if(res.event==='three_sixes'){
       showMsg('🚫 Three 6s! Turn skipped.','#e94560')
       setDiceVal(null)
     } else if(res.event==='no_moves'){
-      showMsg('😔 No moves available','rgba(255,255,255,0.5)')
+      showMsg('No moves — passing turn','rgba(255,255,255,0.5)')
       setTimeout(()=>{engine.autoPass();setState(engine.cloneState());setDiceVal(null)},1500)
     } else if(res.event==='auto_move'&&res.autoMove){
       setTimeout(()=>doApplyMove(res.autoMove),400)
     }
-    if(res.dice===6) showMsg('🎲 Roll again!',PC[state.currentPlayer],1200)
+    if(res.dice===6&&res.event!=='three_sixes') showMsg('🎲 Roll again!',PC[state.currentPlayer],1200)
   }
 
-  function handleRoll() {
-    if (!isHuman(state?.currentPlayer)) return
+  function handleRoll(){
+    if(!state||state.dice!==null||!isHuman(state.currentPlayer)||rolling) return
     doRoll()
   }
 
-  function doApplyMove(move) {
+  function doApplyMove(move){
     const res=engine.applyMove(move)
     const ns=engine.cloneState()
     setState(ns);setDiceVal(null);setLegal([])
@@ -364,7 +442,7 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
       showMsg(`💥 ${names[move.player]} cut a token!`,PC[move.player])
     } else if(res.event==='goal'){
       play('ludo_finish');vibrate([30,20,40])
-      showMsg(`🏠 Token home!`,'#4caf50')
+      showMsg('🏠 Token home!','#4caf50')
     } else if(res.event==='entered'){
       play('ludo_enter')
     } else {
@@ -372,19 +450,18 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
     }
     if(ns.gameOver){
       play('ttt_win');vibrate([60,30,80])
-      showMsg(`🏆 ${names[ns.winner]} wins!`,'#ffd700',5000)
       onGameOver?.({winner:names[ns.winner]})
     }
   }
 
-  function handleTokenClick(p,t) {
-    if (!state||state.gameOver||!isHuman(p)||state.currentPlayer!==p) return
+  function handleTokenClick(p,t){
+    if(!state||state.gameOver||!isHuman(p)||state.currentPlayer!==p) return
     const move=engine.getValidMoves().find(m=>m.player===p&&m.token===t)
-    if (!move) return
+    if(!move) return
     doApplyMove(move)
   }
 
-  if (!state) return null
+  if(!state) return null
   const {currentPlayer,gameOver,winner,tokens}=state
   const canRoll=!gameOver&&state.dice===null&&isHuman(currentPlayer)&&!rolling
   const tokensDone=p=>tokens[p].filter(t=>t.status==='GOAL').length
@@ -392,8 +469,8 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
   return (
     <div style={{
       display:'flex',flexDirection:'column',height:'100%',
-      background:`linear-gradient(160deg,${PC[currentPlayer]}15 0%,#0d0d1a 40%,#1a1428 100%)`,
-      userSelect:'none',overflow:'hidden',position:'relative',
+      background:`linear-gradient(160deg,${PC[currentPlayer]}12 0%,#0d0d1a 40%)`,
+      userSelect:'none',overflow:'hidden',
     }}>
 
       {/* ── Header ── */}
@@ -404,108 +481,118 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
         borderBottom:'1px solid rgba(255,255,255,0.06)',
       }}>
         <button onClick={onExit} style={BTN}>←</button>
-        <span style={{fontSize:22,filter:`drop-shadow(0 0 10px ${PC[currentPlayer]}90)`}}>🎲</span>
-        <span style={{color:'#fff',fontWeight:900,fontSize:18,flex:1,letterSpacing:-0.3}}>Ludo</span>
-        <span style={{fontSize:11,color:'rgba(255,255,255,0.3)',fontWeight:600}}>
-          {mode==='solo'?`${pc}P vs AI`:mode==='local2p'?'2P Local':mode==='local3p'?'3P Local':'4P Local'}
+        <span style={{fontSize:22,filter:`drop-shadow(0 0 10px ${PC[currentPlayer]}80)`}}>🎲</span>
+        <span style={{color:'#fff',fontWeight:900,fontSize:18,flex:1}}>Ludo</span>
+        <span style={{fontSize:10,color:'rgba(255,255,255,0.3)',fontWeight:600,
+          background:'rgba(255,255,255,0.08)',padding:'3px 8px',borderRadius:8}}>
+          {mode==='solo'?`${pc}P vs AI`:mode==='local2p'?'2P':mode==='local3p'?'3P':'4P'}
         </span>
       </div>
 
-      {/* ── Player Panels ── */}
-      <div style={{display:'flex',gap:6,padding:'7px 10px 3px',flexShrink:0}}>
+      {/* ── Player panels ── */}
+      <div style={{display:'flex',gap:6,padding:'6px 10px 3px',flexShrink:0}}>
         {Array.from({length:pc},(_,i)=>(
-          <PlayerPanel key={i}
-            name={names[i]} color={PC[i]} light={PCL[i]}
+          <PlayerBox key={i} p={i} name={names[i]}
             isActive={currentPlayer===i&&!gameOver}
-            isAI={!isHuman(i)}
-            tokensDone={tokensDone(i)}
-            small={pc>2}
-          />
+            isAI={!isHuman(i)} tokensDone={tokensDone(i)}
+            color={PC[i]} light={PCL[i]} dark={PCD[i]}/>
         ))}
       </div>
 
-      {/* ── Status message ── */}
-      <div style={{height:26,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+      {/* ── Turn / message ── */}
+      <div style={{height:24,display:'flex',alignItems:'center',
+        justifyContent:'center',flexShrink:0}}>
         {msg?(
           <div style={{fontSize:12,fontWeight:700,color:msgClr,
-            padding:'2px 12px',borderRadius:20,
-            background:'rgba(0,0,0,0.4)',
-            animation:'ludoMsgIn 0.25s ease'}}>
+            padding:'1px 12px',borderRadius:20,background:'rgba(0,0,0,0.4)',
+            animation:'lkMsgIn 0.25s ease'}}>
             {msg}
           </div>
-        ):!gameOver&&(
+        ):(
           <div style={{display:'flex',alignItems:'center',gap:5,
-            fontSize:12,fontWeight:600,color:PC[currentPlayer]}}>
-            <div style={{width:7,height:7,borderRadius:'50%',background:PC[currentPlayer],
-              animation:'ludoGlow 0.9s infinite'}}/>
+            fontSize:12,fontWeight:700,color:PC[currentPlayer]}}>
+            <div style={{width:7,height:7,borderRadius:'50%',
+              background:PC[currentPlayer],
+              animation:'lkGlow 0.9s infinite'}}/>
             {names[currentPlayer]}'s turn
-            {!isHuman(currentPlayer)&&<span style={{opacity:0.5}}> · AI playing…</span>}
+            {!isHuman(currentPlayer)&&<span style={{opacity:0.5}}> · AI…</span>}
           </div>
         )}
       </div>
 
       {/* ── Board ── */}
-      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',
-        padding:'0 6px',minHeight:0,overflow:'hidden'}}>
-        <LudoBoard
+      <div style={{flex:1,display:'flex',alignItems:'center',
+        justifyContent:'center',padding:'2px 6px',minHeight:0,overflow:'hidden'}}>
+        <LudoKingBoard
           state={state}
           legalTokens={legal}
           onTokenClick={(p,t)=>isHuman(p)&&!gameOver&&handleTokenClick(p,t)}
         />
       </div>
 
-      {/* ── Bottom Controls — Ludo King style ── */}
+      {/* ── Bottom: Dice + controls ── */}
       <div style={{
         padding:'8px 14px 14px',flexShrink:0,
         background:'rgba(0,0,0,0.3)',
-        borderTop:'1px solid rgba(255,255,255,0.05)',
+        borderTop:'1px solid rgba(255,255,255,0.06)',
       }}>
         {!gameOver?(
           <div style={{display:'flex',alignItems:'center',gap:12}}>
-            <LudoDice
-              value={diceVal} rolling={rolling}
-              canRoll={canRoll} onRoll={handleRoll}
-              color={PC[currentPlayer]}
-            />
+            {/* Ludo King dice button */}
+            <button onClick={handleRoll} disabled={!canRoll||rolling}
+              style={{
+                width:66,height:66,borderRadius:16,flexShrink:0,
+                background:canRoll?'#fff':'rgba(255,255,255,0.08)',
+                border:`3px solid ${canRoll?PC[currentPlayer]:'rgba(255,255,255,0.15)'}`,
+                padding:0,cursor:canRoll?'pointer':'default',
+                display:'flex',alignItems:'center',justifyContent:'center',
+                boxShadow:canRoll?`0 6px 24px ${PC[currentPlayer]}70`:'none',
+                transform:rolling?'rotate(25deg) scale(0.85)':canRoll?'scale(1.05)':'scale(1)',
+                transition:'all 0.15s',
+                animation:canRoll&&!rolling?'lkDiceWiggle 2s ease-in-out infinite':'none',
+              }}>
+              {diceVal&&!rolling
+                ? <DiceFace value={diceVal} size={54}/>
+                : canRoll
+                ? <span style={{fontSize:38}}>🎲</span>
+                : <span style={{fontSize:34,opacity:0.3}}>⬜</span>
+              }
+            </button>
+
             <div style={{flex:1}}>
               {diceVal&&!rolling&&(
-                <div style={{color:'#fff',fontSize:14,fontWeight:900,marginBottom:4}}>
-                  Rolled: <span style={{color:PC[currentPlayer],fontSize:22}}>{diceVal}</span>
-                  {diceVal===6&&<span style={{color:'#ffd700',fontSize:11,marginLeft:6,fontWeight:700}}>
-                    +1 bonus roll!
-                  </span>}
+                <div style={{color:'#fff',fontSize:14,fontWeight:900,marginBottom:3}}>
+                  Rolled: <span style={{color:PC[currentPlayer],fontSize:20}}>{diceVal}</span>
+                  {diceVal===6&&<span style={{color:'#ffd700',fontSize:11,marginLeft:6}}>+1 bonus!</span>}
                 </div>
               )}
               <div style={{color:'rgba(255,255,255,0.4)',fontSize:11}}>
                 {canRoll?'👆 Tap dice to roll'
-                  :legal.length>0?'👆 Tap glowing token'
-                  :!isHuman(currentPlayer)?'🤖 AI is playing…'
+                  :legal.length>0?'👆 Tap your token to move'
+                  :!isHuman(currentPlayer)?'🤖 Computer is playing…'
                   :''}
               </div>
             </div>
+
             <button onClick={startGame} style={{
               padding:'10px 14px',borderRadius:12,border:'none',
               background:'rgba(255,255,255,0.1)',color:'#fff',
-              fontSize:12,fontWeight:700,cursor:'pointer',flexShrink:0,fontFamily:'inherit',
+              fontSize:12,fontWeight:700,cursor:'pointer',
+              flexShrink:0,fontFamily:'inherit',
             }}>↺ New</button>
           </div>
         ):(
           <div style={{display:'flex',gap:10}}>
-            <button onClick={onExit} style={{
-              flex:1,padding:'13px 0',borderRadius:13,
+            <button onClick={onExit} style={{flex:1,padding:'13px 0',borderRadius:13,
               border:'1px solid rgba(255,255,255,0.12)',
               background:'rgba(255,255,255,0.07)',
               color:'rgba(255,255,255,0.7)',fontSize:14,fontWeight:700,
-              cursor:'pointer',fontFamily:'inherit'}}>
-              🏠 Home
-            </button>
-            <button onClick={startGame} style={{
-              flex:2,padding:'13px 0',borderRadius:13,border:'none',
+              cursor:'pointer',fontFamily:'inherit'}}>🏠 Home</button>
+            <button onClick={startGame} style={{flex:2,padding:'13px 0',borderRadius:13,
+              border:'none',
               background:`linear-gradient(135deg,${PC[0]},${PC[1]})`,
               color:'#fff',fontSize:15,fontWeight:800,cursor:'pointer',fontFamily:'inherit',
-              boxShadow:'0 4px 20px rgba(229,57,53,0.5)'}}>
-              ▶ Play Again
-            </button>
+              boxShadow:'0 4px 20px rgba(229,57,53,0.5)'}}>▶ Play Again</button>
           </div>
         )}
       </div>
@@ -519,43 +606,51 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
             borderRadius:24,padding:'28px 24px',textAlign:'center',width:290,
             border:`2px solid ${PC[winner]}`,
             boxShadow:`0 20px 60px ${PC[winner]}50`,
-            animation:'ludoPopIn 0.4s cubic-bezier(0.34,1.56,0.64,1)',
+            animation:'lkPopIn 0.4s cubic-bezier(0.34,1.56,0.64,1)',
           }}>
             <div style={{fontSize:56,marginBottom:10}}>🏆</div>
-            <div style={{fontSize:26,fontWeight:900,color:'#fff',marginBottom:4}}>
+            {/* Big token */}
+            <svg width={60} height={60} viewBox="0 0 100 100"
+              style={{margin:'0 auto 8px',display:'block',
+                filter:`drop-shadow(0 0 12px ${PC[winner]})`}}>
+              <circle r={45} cx={50} cy={50} fill={PCD[winner]}/>
+              <circle r={37} cx={50} cy={50} fill={PC[winner]}/>
+              <circle r={28} cx={50} cy={50} fill="rgba(255,255,255,0.9)"/>
+              <circle r={20} cx={50} cy={50} fill={PCM[winner]}/>
+            </svg>
+            <div style={{color:'#fff',fontWeight:900,fontSize:24,marginBottom:4}}>
               {names[winner]} Wins!
             </div>
-            <div style={{fontSize:13,color:'rgba(255,255,255,0.4)',marginBottom:18}}>
-              All tokens home! 🏠
+            <div style={{color:'rgba(255,255,255,0.4)',fontSize:13,marginBottom:18}}>
+              {PN[winner]} player — All tokens home!
             </div>
             <div style={{display:'flex',gap:8}}>
-              <button onClick={onExit} style={{
-                flex:1,padding:'12px 0',borderRadius:12,
+              <button onClick={onExit} style={{flex:1,padding:'12px 0',borderRadius:12,
                 border:'1px solid rgba(255,255,255,0.12)',
                 background:'rgba(255,255,255,0.07)',
-                color:'rgba(255,255,255,0.7)',fontSize:14,fontWeight:700,
-                cursor:'pointer',fontFamily:'inherit'}}>
-                🏠 Home
-              </button>
-              <button onClick={startGame} style={{
-                flex:2,padding:'12px 0',borderRadius:12,border:'none',
+                color:'rgba(255,255,255,0.7)',fontSize:13,fontWeight:700,
+                cursor:'pointer',fontFamily:'inherit'}}>🏠 Home</button>
+              <button onClick={startGame} style={{flex:2,padding:'12px 0',borderRadius:12,
+                border:'none',
                 background:`linear-gradient(135deg,${PC[winner]},${PC[winner]}cc)`,
-                color:'#fff',fontSize:15,fontWeight:800,cursor:'pointer',fontFamily:'inherit'}}>
-                ▶ Play Again
-              </button>
+                color:'#fff',fontSize:14,fontWeight:800,cursor:'pointer',fontFamily:'inherit'}}>
+                ▶ Play Again</button>
             </div>
           </div>
         </div>
       )}
 
       <style>{`
-        @keyframes ludoGlow{0%,100%{opacity:1;box-shadow:0 0 8px currentColor}50%{opacity:0.4;box-shadow:none}}
-        @keyframes ludoMsgIn{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
-        @keyframes ludoPopIn{from{transform:scale(0.7);opacity:0}to{transform:scale(1);opacity:1}}
+        @keyframes lkGlow{0%,100%{opacity:1;box-shadow:0 0 8px currentColor}50%{opacity:0.3}}
+        @keyframes lkMsgIn{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes lkPopIn{from{transform:scale(0.7);opacity:0}to{transform:scale(1);opacity:1}}
+        @keyframes lkDiceWiggle{0%,100%{transform:scale(1.05) rotate(0deg)}
+          25%{transform:scale(1.08) rotate(-6deg)}75%{transform:scale(1.08) rotate(6deg)}}
       `}</style>
     </div>
   )
 }
+
 const BTN={background:'rgba(255,255,255,0.08)',border:'1px solid rgba(255,255,255,0.1)',
   color:'#fff',fontSize:18,width:36,height:36,borderRadius:10,cursor:'pointer',
   display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontFamily:'inherit'}
