@@ -2,8 +2,8 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="./assets/favicon-9srsS5Wl-9srsS5Wl-9srsS5Wl.svg" />
-    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <link rel="icon" type="image/svg+xml" href="./assets/favicon-9srsS5Wl.svg" />
+    <link rel="apple-touch-icon" href="./assets/icon-192-C9QTcBQL.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#0a0b14" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -15,49 +15,27 @@
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body, #root {
-        height: 100%;
-        width: 100%;
-        overflow: hidden;
-        /* Safe area for notch/punch-hole phones */
+        height: 100%; width: 100%; overflow: hidden;
         padding-top: env(safe-area-inset-top);
         padding-bottom: env(safe-area-inset-bottom);
-        padding-left: env(safe-area-inset-left);
-        padding-right: env(safe-area-inset-right);
       }
       body {
         background: #0a0b14;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
         -webkit-tap-highlight-color: transparent;
-        -webkit-touch-callout: none;
         overscroll-behavior: none;
         touch-action: manipulation;
       }
-      @keyframes fadein {
-        from { opacity: 0; transform: translateY(4px); }
-        to   { opacity: 1; transform: translateY(0); }
-      }
-      @keyframes popIn {
-        from { transform: scale(0.7); opacity: 0; }
-        to   { transform: scale(1);   opacity: 1; }
-      }
-      @keyframes slideDown {
-        from { transform: translateY(-8px); opacity: 0; }
-        to   { transform: translateY(0);    opacity: 1; }
-      }
-      @keyframes glowPulse {
-        0%, 100% { opacity: 1; }
-        50%       { opacity: 0.4; }
-      }
-      ::-webkit-scrollbar { display: none; }
-      input  { font-family: inherit; }
-      button { font-family: inherit; touch-action: manipulation; }
-      input::placeholder { color: rgba(255,255,255,0.28); }
-      /* Prevent iOS zoom on input focus */
-      input, select, textarea { font-size: 16px !important; }
+      @keyframes fadein { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+      @keyframes popIn  { from{transform:scale(0.7);opacity:0} to{transform:scale(1);opacity:1} }
+      ::-webkit-scrollbar { display:none; }
+      input,button { font-family:inherit; }
+      input::placeholder { color:rgba(255,255,255,0.28); }
+      input,select,textarea { font-size:16px !important; }
     </style>
-  <link rel="manifest" href="./assets/manifest-BHD3yZoA.webmanifest"><script id="vite-plugin-pwa:register-sw" src="./registerSW.js"></script>  
-<link rel="manifest" href="./assets/manifest-BHD3yZoA.webmanifest"><script id="vite-plugin-pwa:register-sw" src="./registerSW.js"></script>  <script type="module" crossorigin src="./assets/index-CfIFsnyx.js"></script>
-<link rel="manifest" href="./manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="./registerSW.js"></script></head>
+    <script type="module" crossorigin src="./assets/index-3k-pu5Jq.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/react-nf7bT_Uh.js">
+  </head>
   <body>
     <div id="root"></div>
   </body>
