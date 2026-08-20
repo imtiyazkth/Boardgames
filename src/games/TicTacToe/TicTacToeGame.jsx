@@ -66,7 +66,7 @@ export default function TicTacToeGame({ mode='solo', difficulty='normal', player
       const winner = ns.winner==='draw'?null:ns.winner
       const w = winner==='X'?'X':'O'
       setScores(s=>({...s, [ns.winner==='draw'?'draw':w]:s[ns.winner==='draw'?'draw':w]+1}))
-      SaveSystem.recordResult(
+      
         'tictactoe',
         winner ? (winner==='X'?'win':'loss') : 'draw'
       )
