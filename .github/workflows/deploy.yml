@@ -1,11 +1,15 @@
 name: Build and Deploy
+
 on:
   push:
     branches: [main]
+
 permissions:
   contents: write
+
 jobs:
-  deploy:
+  # ── Web Deploy ──────────────────────────────────────────────────────────────
+  deploy-web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,10 +19,108 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+      - uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./dist
           force_orphan: true
           enable_jekyll: false
+
+  # ── APK Build ───────────────────────────────────────────────────────────────
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Build web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Capacitor
+        run: |
+          npm install --save \
+            @capacitor/core@6.1.2 \
+            @capacitor/android@6.1.2
+          npm install --save-dev \
+            @capacitor/cli@6.1.2
+
+      - name: Write capacitor config
+        run: |
+          cat > capacitor.config.json << 'CAPEOF'
+          {
+            "appId": "io.github.imtiyazkth.boardgames",
+            "appName": "Board Games",
+            "webDir": "dist",
+            "android": {
+              "minWebViewVersion": 60,
+              "backgroundColor": "#0a0b14"
+            }
+          }
+          CAPEOF
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Fix Kotlin stdlib conflict
+        working-directory: android
+        run: |
+          cat >> build.gradle << 'GRADLE'
+
+          subprojects {
+              configurations.all {
+                  resolutionStrategy {
+                      force "org.jetbrains.kotlin:kotlin-stdlib:1.9.10"
+                      force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.10"
+                      force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10"
+                  }
+              }
+          }
+          GRADLE
+
+      - name: Build Debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace \
+            -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=512m"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: BoardGames-v2-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: Show APK info
+        run: |
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ -f "$APK" ]; then
+            echo "✅ APK built successfully!"
+            echo "Size: $(du -sh $APK | cut -f1)"
+          else
+            echo "❌ APK not found"
+            find android -name "*.apk" 2>/dev/null
+          fi
