@@ -6,6 +6,7 @@
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAudio } from '../../hooks/useAudio.js'
+import { audioEngine } from '../../core/AudioEngine.js'
 
 /* ============================================================
    ENGINE — exact port from index.html
@@ -59,12 +60,13 @@ const HOME_LANE = {
   blue:  [[13,7],[12,7],[11,7],[10,7],[9,7],[8,7]],
 }
 
-// Base pocket positions (fractional grid coords for centering inside home box)
+// Base pocket positions — MUST match the pocket-ring formula in LudoBoard exactly
+// ((c_home+1.2+pj*2.5), (r_home+1.2+pi*2.5)) or tokens render off-center in their ring.
 const BASE_POCKETS = {
-  red:   [[1.5,1.5],[1.5,3.5],[3.5,1.5],[3.5,3.5]],
-  green: [[1.5,10.5],[1.5,12.5],[3.5,10.5],[3.5,12.5]],
-  yellow:[[10.5,10.5],[10.5,12.5],[12.5,10.5],[12.5,12.5]],
-  blue:  [[10.5,1.5],[10.5,3.5],[12.5,1.5],[12.5,3.5]],
+  red:   [[1.2,1.2],[1.2,3.7],[3.7,1.2],[3.7,3.7]],
+  green: [[1.2,10.2],[1.2,12.7],[3.7,10.2],[3.7,12.7]],
+  yellow:[[10.2,10.2],[10.2,12.7],[12.7,10.2],[12.7,12.7]],
+  blue:  [[10.2,1.2],[10.2,3.7],[12.7,1.2],[12.7,3.7]],
 }
 
 function newToken(color, idx) {
@@ -280,7 +282,7 @@ function LudoBoard({ state, legalTokenIds, onTokenClick }) {
             const px=(c+1.2+pj*2.5)*CS, py=(r+1.2+pi*2.5)*CS
             return (
               <g key={`${pi}-${pj}`}>
-                <circle cx={px} cy={py} r={CS*0.58}
+                <circle cx={px} cy={py} r={CS*0.46}
                   fill={COLOR_LIGHT[color]} stroke={COLOR_HEX[color]} strokeWidth={2}/>
               </g>
             )
@@ -386,15 +388,16 @@ const DOT_POS = {
   5:[[25,25],[75,25],[50,50],[25,75],[75,75]],
   6:[[25,20],[75,20],[25,50],[75,50],[25,80],[75,80]],
 }
-function DiceSVG({ value, size=52, color, active, rolling }) {
+function DiceSVG({ value, size=52, color, active, rolling, sixSpin }) {
   const dots=DOT_POS[value]||[]
   return (
     <svg viewBox="0 0 100 100" width={size} height={size}
       style={{
-        filter: active?`drop-shadow(0 0 8px ${color})`:'none',
+        filter: sixSpin?`drop-shadow(0 0 12px #ffd700)`:active?`drop-shadow(0 0 8px ${color})`:'none',
         transform: rolling?'rotate(15deg) scale(0.88)':active?'scale(1.05)':'scale(0.95)',
         transition:'all 0.15s',
-        animation: active&&!rolling?'diceWiggle 2s ease-in-out infinite':'none',
+        animation: sixSpin?'lnSixSpin 0.7s cubic-bezier(.3,1.6,.4,1)'
+          :active&&!rolling?'diceWiggle 2s ease-in-out infinite':'none',
         opacity: active?1:0.4,
       }}>
       <rect x={4} y={4} width={92} height={92} rx={18}
@@ -403,7 +406,10 @@ function DiceSVG({ value, size=52, color, active, rolling }) {
         <circle key={i} cx={dx} cy={dy} r={value===1?12:9}
           fill={value===1?color:'#1a2138'}/>
       ))}
-      <style>{`@keyframes diceWiggle{0%,100%{transform:scale(1.05) rotate(0)}25%{transform:scale(1.08) rotate(-6deg)}75%{transform:scale(1.08) rotate(6deg)}}`}</style>
+      <style>{`
+        @keyframes diceWiggle{0%,100%{transform:scale(1.05) rotate(0)}25%{transform:scale(1.08) rotate(-6deg)}75%{transform:scale(1.08) rotate(6deg)}}
+        @keyframes lnSixSpin{0%{transform:rotate(0) scale(1)}50%{transform:rotate(360deg) scale(1.25)}100%{transform:rotate(720deg) scale(1)}}
+      `}</style>
     </svg>
   )
 }
@@ -440,6 +446,8 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
   const [legalIds, setLegalIds] = useState(new Set())
   const [msg,  setMsg]  = useState('')
   const [msgC, setMsgC] = useState('#ffd700')
+  const [sixPulse, setSixPulse] = useState(false)
+  const [musicOn, setMusicOn] = useState(()=>audioEngine.getSettings().musicEnabled)
   const animRef = useRef(false)
 
   const isHuman = useCallback(color => {
@@ -450,6 +458,12 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
   function showMsg(text, color='#ffd700', ms=2000) {
     setMsg(text); setMsgC(color)
     setTimeout(()=>setMsg(''), ms)
+  }
+
+  function toggleMusic(){
+    audioEngine.unlock()
+    audioEngine.toggleMusic()
+    setMusicOn(audioEngine.getSettings().musicEnabled)
   }
 
   function startGame() {
@@ -502,6 +516,8 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
     if (val===6) {
       play('ludo_enter')
       showMsg('🎲 SIX! Roll again bonus!', COLOR_HEX[color], 1200)
+      setSixPulse(true)
+      setTimeout(()=>setSixPulse(false), 700)
     }
 
     const moves = calculateLegalMoves(gs2, color, val)
@@ -548,10 +564,10 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
 
     // Sound + message
     if (ns2.event==='capture') {
-      play('ludo_capture'); vibrate([25,15,25])
+      play('ludo_cut'); vibrate([25,15,25])
       showMsg(`💥 ${currentPlayerOf(state).name} captured a token!`, COLOR_HEX[currentPlayerOf(state).color])
     } else if (ns2.event==='finish') {
-      play('ludo_finish'); vibrate([30,20,40])
+      play('ludo_home'); vibrate([30,20,40])
       showMsg('🏠 Token reached home!', '#4caf50')
     } else {
       play('ludo_move'); vibrate([8])
@@ -561,7 +577,7 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
     if (checkVictory(ns2, currentPlayerOf(state).color)) {
       const winner = currentPlayerOf(state)
       await delay(400)
-      play('ttt_win'); vibrate([60,30,80])
+      play('ludo_win'); vibrate([60,30,80])
       showMsg(`🏆 ${winner.name} wins!`, COLOR_HEX[winner.color], 6000)
       setGs({...ns2, phase:'GAME_OVER'})
       onGameOver?.({winner:winner.name})
@@ -589,9 +605,10 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
     setTimeout(()=>checkAI(ns), 700)
   }
 
-  function handleDiceClick() {
+  function handleDiceClick(color) {
     const p=currentPlayerOf(gs)
     if (!p||p.type!=='HUMAN') return
+    if (color && color!==p.color) return
     if (gs.phase!=='TURN_START') return
     if (animRef.current||rolling) return
     animRef.current=true
@@ -621,6 +638,8 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
         <button onClick={onExit} style={BTN}>←</button>
         <span style={{fontSize:22,filter:`drop-shadow(0 0 10px ${COLOR_HEX[cpColor]}80)`}}>🎲</span>
         <span style={{color:'#fff',fontWeight:900,fontSize:18,flex:1}}>Ludo</span>
+        <button onClick={toggleMusic} style={{...BTN, opacity:musicOn?1:0.45}}
+          title={musicOn?'Music on':'Music off'}>🎵</button>
         <span style={{fontSize:10,color:'rgba(255,255,255,0.3)',fontWeight:600,
           background:'rgba(255,255,255,0.08)',padding:'3px 8px',borderRadius:8}}>
           {mode==='solo'?`${pc}P vs AI`:mode.replace('local','')+'P Local'}
@@ -687,17 +706,45 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
         )}
       </div>
 
-      {/* ── Board ── */}
+      {/* ── Board + per-player corner dice ── */}
       <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',
         padding:'2px 6px',minHeight:0,overflow:'hidden'}}>
-        <LudoBoard
-          state={gs}
-          legalTokenIds={legalIds}
-          onTokenClick={handleTokenClick}
-        />
+        <div style={{position:'relative',width:'100%',maxWidth:420+64,padding:32}}>
+          <LudoBoard
+            state={gs}
+            legalTokenIds={legalIds}
+            onTokenClick={handleTokenClick}
+          />
+          {gs?.players.map(p=>{
+            const isActive = cpColor===p.color && !gameOver
+            const corner =
+              p.color==='red'    ? {top:0,left:0} :
+              p.color==='green'  ? {top:0,right:0} :
+              p.color==='blue'   ? {bottom:0,left:0} :
+                                    {bottom:0,right:0}
+            return (
+              <button key={p.color}
+                onClick={()=>handleDiceClick(p.color)}
+                disabled={!(isActive&&canRoll)}
+                style={{
+                  position:'absolute', ...corner,
+                  background:'transparent',border:'none',padding:0,
+                  cursor:(isActive&&canRoll)?'pointer':'default',
+                }}>
+                <DiceSVG
+                  value={isActive?(dice||1):1} size={44}
+                  color={COLOR_HEX[p.color]}
+                  active={isActive&&canRoll}
+                  rolling={isActive&&rolling}
+                  sixSpin={isActive&&sixPulse}
+                />
+              </button>
+            )
+          })}
+        </div>
       </div>
 
-      {/* ── Controls — corner dice like Ludo Nova ── */}
+      {/* ── Controls ── */}
       <div style={{
         padding:'8px 14px 14px',flexShrink:0,
         background:'rgba(0,0,0,0.3)',
@@ -705,19 +752,6 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
       }}>
         {!gameOver?(
           <div style={{display:'flex',alignItems:'center',gap:12}}>
-            {/* Dice */}
-            <button onClick={handleDiceClick} disabled={!canRoll}
-              style={{
-                background:'transparent',border:'none',padding:0,
-                cursor:canRoll?'pointer':'default',flexShrink:0,
-              }}>
-              <DiceSVG
-                value={dice||1} size={62}
-                color={COLOR_HEX[cpColor]}
-                active={canRoll} rolling={rolling}
-              />
-            </button>
-
             <div style={{flex:1}}>
               {dice&&!rolling&&(
                 <div style={{color:'#fff',fontSize:14,fontWeight:900,marginBottom:3}}>
@@ -726,7 +760,7 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
                 </div>
               )}
               <div style={{color:'rgba(255,255,255,0.4)',fontSize:11}}>
-                {canRoll?'👆 Tap dice to roll'
+                {canRoll?'👆 Tap your glowing dice to roll'
                   :legalIds.size>0&&cp?.type==='HUMAN'?'👆 Tap a token to move'
                   :cp?.type==='AI'?'🤖 AI playing…'
                   :''}
