@@ -268,17 +268,27 @@ const DEFAULT_SETTINGS = {
   masterVolume:  0.85,
   sfxVolume:     0.85,
   vibration:     true,
+  musicEnabled:  false,
+  musicVolume:   0.35,
 }
+
+// Gentle ambient loop notes, reused across games — minor-key arpeggio so it
+// stays unobtrusive under fast SFX rather than competing with them.
+const MUSIC_LOOP = [220.00, 261.63, 329.63, 392.00, 329.63, 261.63, 293.66, 246.94]
+const MUSIC_STEP_MS = 620
 
 class AudioEngine {
   constructor() {
     this._ctx       = null
     this._master    = null   // GainNode (master volume)
     this._sfx       = null   // GainNode (sfx bus)
+    this._music     = null   // GainNode (music bus)
     this._unlocked  = false
     this._settings  = { ...DEFAULT_SETTINGS }
     this._activeCount = 0
     this._MAX_CONCURRENT = 6
+    this._musicTimer = null
+    this._musicStepIdx = 0
     this._loadSettings()
   }
 
@@ -301,6 +311,7 @@ class AudioEngine {
       this._ctx    = new Ctx()
       this._master = this._ctx.createGain()
       this._sfx    = this._ctx.createGain()
+      this._music  = this._ctx.createGain()
 
       const comp = this._ctx.createDynamicsCompressor()
       comp.threshold.value = -12
@@ -308,11 +319,13 @@ class AudioEngine {
       comp.ratio.value     = 4
 
       this._sfx.connect(comp)
+      this._music.connect(comp)
       comp.connect(this._master)
       this._master.connect(this._ctx.destination)
 
       this._applyVolume()
       this._unlocked = true
+      if (this._settings.musicEnabled) this._startMusicLoop()
     } catch (e) {
       // Audio unavailable — silent mode; gameplay continues normally
     }
@@ -361,6 +374,15 @@ class AudioEngine {
   toggleSFX()       { this.setSettings({ sfxEnabled:  !this._settings.sfxEnabled }) }
   toggleVibration() { this.setSettings({ vibration:   !this._settings.vibration }) }
 
+  /** Toggle the ambient background music loop. Call after unlock() (needs a user gesture). */
+  toggleMusic() {
+    const next = !this._settings.musicEnabled
+    this.setSettings({ musicEnabled: next })
+    if (next) this._startMusicLoop(); else this._stopMusicLoop()
+  }
+
+  setMusicVolume(v) { this.setSettings({ musicVolume: Math.min(1, Math.max(0, v)) }) }
+
   setMasterVolume(v) { this.setSettings({ masterVolume: Math.min(1, Math.max(0, v)) }) }
   setSFXVolume(v)    { this.setSettings({ sfxVolume:    Math.min(1, Math.max(0, v)) }) }
 
@@ -370,6 +392,21 @@ class AudioEngine {
     if (!this._master || !this._sfx) return
     this._master.gain.value = this._settings.masterVolume
     this._sfx.gain.value    = this._settings.sfxEnabled ? this._settings.sfxVolume : 0
+    if (this._music) this._music.gain.value = this._settings.musicEnabled ? this._settings.musicVolume : 0
+  }
+
+  _startMusicLoop() {
+    if (this._musicTimer || !this._ctx || !this._music) return
+    this._musicTimer = setInterval(() => {
+      if (!this._settings.musicEnabled || this._ctx.state === 'suspended') return
+      const freq = MUSIC_LOOP[this._musicStepIdx % MUSIC_LOOP.length]
+      toneAt(this._ctx, this._music, freq, this._ctx.currentTime, 0.55, 0.9, 'sine')
+      this._musicStepIdx++
+    }, MUSIC_STEP_MS)
+  }
+
+  _stopMusicLoop() {
+    if (this._musicTimer) { clearInterval(this._musicTimer); this._musicTimer = null }
   }
 
   _saveSettings() {
