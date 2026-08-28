@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="80" fill="#0a0b14"/>
+  <rect width="512" height="512" rx="80" fill="url(#bg)"/>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a1f3a"/>
+      <stop offset="100%" stop-color="#0a0b14"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#f5c842"/>
+      <stop offset="100%" stop-color="#e8860a"/>
+    </linearGradient>
+  </defs>
+  <!-- Chess board pattern -->
+  <g opacity="0.15">
+    <rect x="80" y="80" width="60" height="60" fill="#fff"/>
+    <rect x="140" y="80" width="60" height="60" fill="#666"/>
+    <rect x="200" y="80" width="60" height="60" fill="#fff"/>
+    <rect x="260" y="80" width="60" height="60" fill="#666"/>
+    <rect x="80" y="140" width="60" height="60" fill="#666"/>
+    <rect x="140" y="140" width="60" height="60" fill="#fff"/>
+    <rect x="200" y="140" width="60" height="60" fill="#666"/>
+    <rect x="260" y="140" width="60" height="60" fill="#fff"/>
+  </g>
+  <!-- Game controller icon -->
+  <text x="256" y="300" text-anchor="middle" font-size="200" font-family="serif">🎮</text>
+  <!-- Gold text -->
+  <text x="256" y="430" text-anchor="middle" font-size="52" font-weight="900"
+    font-family="system-ui,sans-serif" fill="url(#gold)" letter-spacing="-1">BOARD GAMES</text>
+  <!-- Glow ring -->
+  <circle cx="256" cy="256" r="200" fill="none" stroke="url(#gold)" stroke-width="3" opacity="0.3"/>
+</svg>
