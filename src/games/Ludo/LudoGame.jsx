@@ -415,6 +415,54 @@ function DiceSVG({ value, size=52, color, active, rolling, sixSpin }) {
 }
 
 /* ============================================================
+   CORNER BADGE — two-tile widget (location pin + dice card),
+   mirrored left/right, matching the Ludo King reference layout
+   ============================================================ */
+function PinIcon({ color, size=20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24">
+      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"
+        fill="#fff" stroke={color} strokeWidth={1.5}/>
+      <circle cx={12} cy={9} r={3.4} fill={color}/>
+    </svg>
+  )
+}
+function CornerBadge({ color, isActive, canRoll, rolling, sixSpin, diceValue, onRoll, pinFirst }) {
+  const pinTile = (
+    <div key="pin" style={{
+      width:38,height:38,borderRadius:9,
+      background:`linear-gradient(160deg,#3a5ba8,#1f3568)`,
+      display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,
+    }}>
+      <PinIcon color={COLOR_HEX[color]} size={19}/>
+    </div>
+  )
+  const cardTile = (
+    <button key="card" onClick={onRoll} disabled={!(isActive&&canRoll)}
+      style={{
+        width:38,height:38,borderRadius:9,border:'none',padding:0,flexShrink:0,
+        background:isActive?'#ffffff':'linear-gradient(160deg,#f3c9cb,#e6a3a6)',
+        display:'flex',alignItems:'center',justifyContent:'center',
+        cursor:(isActive&&canRoll)?'pointer':'default',
+      }}>
+      {isActive && <DiceSVG value={diceValue||1} size={30} color={COLOR_HEX[color]}
+        active={canRoll} rolling={rolling} sixSpin={sixSpin}/>}
+    </button>
+  )
+  return (
+    <div style={{
+      display:'flex',gap:3,padding:4,borderRadius:13,
+      background:'linear-gradient(160deg,#2c4d90,#182c58)',
+      border:`2px solid ${isActive?'#ffd700':'rgba(255,215,0,0.45)'}`,
+      boxShadow:isActive?'0 0 16px rgba(255,215,0,0.55)':'0 4px 10px rgba(0,0,0,0.35)',
+      transition:'box-shadow 0.2s, border-color 0.2s',
+    }}>
+      {pinFirst ? [pinTile,cardTile] : [cardTile,pinTile]}
+    </div>
+  )
+}
+
+/* ============================================================
    MAIN GAME COMPONENT
    ============================================================ */
 function delay(ms){ return new Promise(r=>setTimeout(r,ms)) }
@@ -709,7 +757,7 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
       {/* ── Board + per-player corner dice ── */}
       <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',
         padding:'2px 6px',minHeight:0,overflow:'hidden'}}>
-        <div style={{position:'relative',width:'100%',maxWidth:420+64,padding:32}}>
+        <div style={{position:'relative',width:'100%',maxWidth:420+108,padding:52}}>
           <LudoBoard
             state={gs}
             legalTokenIds={legalIds}
@@ -722,23 +770,20 @@ export default function LudoGame({ mode='solo', playerCount=4, playerNames=[], o
               p.color==='green'  ? {top:0,right:0} :
               p.color==='blue'   ? {bottom:0,left:0} :
                                     {bottom:0,right:0}
+            const pinFirst = p.color==='red' || p.color==='blue' // left-side corners: pin on outer edge
             return (
-              <button key={p.color}
-                onClick={()=>handleDiceClick(p.color)}
-                disabled={!(isActive&&canRoll)}
-                style={{
-                  position:'absolute', ...corner,
-                  background:'transparent',border:'none',padding:0,
-                  cursor:(isActive&&canRoll)?'pointer':'default',
-                }}>
-                <DiceSVG
-                  value={isActive?(dice||1):1} size={44}
-                  color={COLOR_HEX[p.color]}
-                  active={isActive&&canRoll}
+              <div key={p.color} style={{position:'absolute', ...corner}}>
+                <CornerBadge
+                  color={p.color}
+                  isActive={isActive}
+                  canRoll={canRoll}
                   rolling={isActive&&rolling}
                   sixSpin={isActive&&sixPulse}
+                  diceValue={dice}
+                  onRoll={()=>handleDiceClick(p.color)}
+                  pinFirst={pinFirst}
                 />
-              </button>
+              </div>
             )
           })}
         </div>
